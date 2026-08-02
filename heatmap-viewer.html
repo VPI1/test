@@ -1,0 +1,955 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Heatmap Viewer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+<style>
+  :root{
+    --bg:#12151a; --panel:#1b2028; --panel2:#232a35; --border:#323a47;
+    --text:#e8ecf1; --sub:#9aa5b3; --accent:#4f9dff; --accent2:#ff5c7c;
+    --good:#3ddc84; --warn:#ffb454;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;margin:0;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text);}
+  #app{display:flex;height:100vh;width:100vw;overflow:hidden;}
+  #map{flex:1;height:100%;}
+  #sidebar{
+    width:300px;min-width:300px;background:var(--panel);border-left:1px solid var(--border);
+    display:flex;flex-direction:column;overflow:hidden;
+  }
+  .sidebar-header{padding:14px 16px 10px;border-bottom:1px solid var(--border);}
+  .sidebar-header h1{font-size:15px;margin:0 0 2px;font-weight:600;}
+  .sidebar-header p{font-size:11px;color:var(--sub);margin:0;}
+  .view-only-badge{
+    display:inline-block;margin-top:8px;padding:2px 8px;border-radius:10px;
+    background:#3ddc8422;color:var(--good);border:1px solid var(--good);font-size:10.5px;font-weight:600;
+  }
+  button{
+    background:var(--panel2);color:var(--text);border:1px solid var(--border);
+    border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer;transition:.12s;
+  }
+  button:hover{border-color:var(--accent);}
+  button.active-toggle{background:var(--good);border-color:var(--good);color:#08131f;font-weight:600;}
+  button.small{padding:4px 7px;font-size:11px;}
+  .toolbar{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:6px;}
+  #layerList{flex:1;overflow-y:auto;padding:8px;}
+  .layer-card{
+    background:var(--panel2);border:1px solid var(--border);border-radius:8px;
+    margin-bottom:8px;padding:10px;transition:.12s;cursor:pointer;
+  }
+  .layer-card.selected{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset;}
+  .layer-row{display:flex;align-items:center;gap:8px;}
+  .layer-name{flex:1;font-size:13px;font-weight:600;}
+  .swatch-strip{height:8px;border-radius:4px;margin:8px 0 6px;}
+  .layer-meta{font-size:10.5px;color:var(--sub);display:flex;justify-content:space-between;margin-bottom:6px;}
+  .criteria-text{font-size:11px;color:var(--sub);white-space:pre-wrap;}
+  .switch{position:relative;width:34px;height:18px;flex-shrink:0;}
+  .switch input{opacity:0;width:0;height:0;}
+  .slider-ui{
+    position:absolute;cursor:pointer;inset:0;background:#3a4250;border-radius:20px;transition:.15s;
+  }
+  .slider-ui:before{
+    content:"";position:absolute;height:14px;width:14px;left:2px;bottom:2px;background:white;
+    border-radius:50%;transition:.15s;
+  }
+  input:checked + .slider-ui{background:var(--good);}
+  input:checked + .slider-ui:before{transform:translateX(16px);}
+  .empty-hint{color:var(--sub);font-size:12px;text-align:center;padding:30px 10px;}
+  ::-webkit-scrollbar{width:8px;}
+  ::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px;}
+
+  /* Leaflet basemap switcher control */
+  .basemap-control{
+    background:var(--panel);border:1px solid var(--border);border-radius:8px;
+    box-shadow:0 2px 8px #0006;overflow:hidden;font-family:inherit;
+  }
+  .basemap-control button{
+    display:block;width:100%;text-align:left;border:none;border-radius:0;
+    border-bottom:1px solid var(--border);background:var(--panel);color:var(--text);
+    padding:7px 12px;font-size:12px;
+  }
+  .basemap-control button:last-child{border-bottom:none;}
+  .basemap-control button.active{background:var(--accent);color:#08131f;font-weight:700;}
+  .basemap-toggle-btn{
+    width:36px;height:36px;background:var(--panel);border:1px solid var(--border);
+    display:flex;align-items:center;justify-content:center;font-size:16px;cursor:pointer;
+  }
+  .leaflet-control-custom a{color:var(--text);}
+  .legend-control{
+    background:var(--panel);border:1px solid var(--border);border-radius:8px;
+    box-shadow:0 2px 8px #0006;padding:9px 11px;font-size:11px;min-width:170px;display:none;
+  }
+  .legend-control .legend-bar{height:10px;border-radius:5px;margin:6px 0 4px;border:1px solid var(--border);}
+  .legend-control .legend-labels{display:flex;justify-content:space-between;color:var(--sub);}
+  .legend-control .legend-title{font-weight:600;color:var(--text);}
+  .leaflet-popup.polygon-edit-popup .leaflet-popup-content-wrapper{
+    background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;
+  }
+  .leaflet-popup.polygon-edit-popup .leaflet-popup-content{margin:10px 12px;}
+  .leaflet-popup.polygon-edit-popup .leaflet-popup-tip{background:var(--panel);}
+  .leaflet-popup.polygon-edit-popup .leaflet-popup-close-button{color:var(--sub) !important;}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map"></div>
+  <div id="sidebar">
+    <div class="sidebar-header">
+      <h1>Heatmap Viewer</h1>
+      <p>Read-only — pan, zoom, toggle layers</p>
+      <span class="view-only-badge">VIEW ONLY</span>
+    </div>
+    <div class="toolbar">
+      <button id="btnAutoExposure" style="flex:1;" title="Recalibrates each layer's color range to the actual density it renders, so the full color scale is used proportionally instead of one end dominating.">🔆 Auto Exposure: OFF</button>
+      <button id="btnReload" class="small" title="Re-fetch the published data file">⟳ Reload data</button>
+    </div>
+    <div id="layerList"></div>
+  </div>
+</div>
+
+<script>
+/* ---------------- Map setup ---------------- */
+const CENTER = [48.79239019646409, 34.67285156250001];
+const ZOOM = 8;
+const map = L.map('map', { center: CENTER, zoom: ZOOM, zoomControl: true, preferCanvas: true });
+
+map.createPane('polygonPane');
+map.getPane('polygonPane').style.zIndex = 450;
+
+const basemaps = {
+  ghybrid: L.tileLayer('https://{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
+    subdomains: ['mt0','mt1','mt2','mt3'], maxZoom: 20, attribution: 'Google Hybrid'
+  }),
+  gsat: L.tileLayer('https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
+    subdomains: ['mt0','mt1','mt2','mt3'], maxZoom: 20, attribution: 'Google Satellite'
+  }),
+  osm: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    subdomains: ['a','b','c'], maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+  }),
+  esri: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19, attribution: 'Esri World Imagery'
+  }),
+  esriDarkGray: L.layerGroup([
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 16, attribution: 'Esri Dark Gray Canvas'
+    }),
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 16
+    })
+  ])
+};
+const basemapLabels = { ghybrid:'Google Hybrid', gsat:'Google Satellite', osm:'OpenStreetMap', esri:'Esri World Imagery', esriDarkGray:'Esri Dark Gray' };
+let currentBasemapKey = 'esriDarkGray';
+basemaps[currentBasemapKey].addTo(map);
+
+const BasemapControl = L.Control.extend({
+  options: { position: 'topright' },
+  onAdd: function() {
+    const container = L.DomUtil.create('div', 'basemap-control-wrap');
+    const menu = L.DomUtil.create('div', 'basemap-control', container);
+    menu.style.display = 'none';
+    Object.keys(basemaps).forEach(key => {
+      const btn = L.DomUtil.create('button', key === currentBasemapKey ? 'active' : '', menu);
+      btn.textContent = basemapLabels[key];
+      btn.dataset.key = key;
+      L.DomEvent.on(btn, 'click', L.DomEvent.stop);
+      L.DomEvent.on(btn, 'click', () => setBasemap(key));
+    });
+    const toggleBtn = L.DomUtil.create('div', 'basemap-toggle-btn', container);
+    toggleBtn.title = 'Switch basemap';
+    toggleBtn.textContent = '🗺';
+    L.DomEvent.on(toggleBtn, 'click', L.DomEvent.stop);
+    L.DomEvent.on(toggleBtn, 'click', () => {
+      menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+    });
+    L.DomEvent.disableClickPropagation(container);
+    L.DomEvent.disableScrollPropagation(container);
+    this._menu = menu;
+    return container;
+  }
+});
+map.addControl(new BasemapControl());
+
+function setBasemap(key) {
+  if (key === currentBasemapKey) return;
+  map.removeLayer(basemaps[currentBasemapKey]);
+  currentBasemapKey = key;
+  basemaps[key].addTo(map);
+  document.querySelectorAll('.basemap-control button').forEach(b => {
+    b.classList.toggle('active', b.dataset.key === key);
+  });
+}
+
+/* ---------------- Legend (Red/Blue "infiltration frequency" palettes only) ---------------- */
+const LEGEND_LOW_LABEL = 'One-time';
+const LEGEND_HIGH_LABEL = 'Constant';
+
+const LegendControl = L.Control.extend({
+  options: { position: 'bottomleft' },
+  onAdd: function() {
+    const container = L.DomUtil.create('div', 'legend-control');
+    container.innerHTML = `
+      <div class="legend-title"></div>
+      <div class="legend-bar"></div>
+      <div class="legend-labels"><span>${LEGEND_LOW_LABEL}</span><span>${LEGEND_HIGH_LABEL}</span></div>
+    `;
+    L.DomEvent.disableClickPropagation(container);
+    this._container = container;
+    return container;
+  }
+});
+const legendControl = new LegendControl();
+map.addControl(legendControl);
+
+function updateLegend() {
+  const container = legendControl._container;
+  if (!container) return;
+  const layer = getActiveLayer();
+  if (!layer || (layer.paletteName !== 'Red' && layer.paletteName !== 'Blue')) {
+    container.style.display = 'none';
+    return;
+  }
+  container.style.display = 'block';
+  container.querySelector('.legend-title').textContent = layer.name + ' — infiltration frequency';
+  container.querySelector('.legend-bar').style.background = gradientCss(layer.gradient);
+}
+
+/* ---------------- Layer / data model (read-only: no drawing/painting here) ---------------- */
+const DEFAULT_GRADIENT = [
+  { pos: 0.2, color: '#0000ff' },
+  { pos: 0.4, color: '#00ffff' },
+  { pos: 0.6, color: '#00ff00' },
+  { pos: 0.8, color: '#ffff00' },
+  { pos: 1.0, color: '#ff0000' }
+];
+
+let layers = [];
+let activeLayerId = null;
+let layerIdCounter = 1;
+let polygonIdCounter = 1;
+let axisIdCounter = 1;
+
+function gradientArrayToObj(stops) {
+  const obj = {};
+  stops.slice().sort((a,b)=>a.pos-b.pos).forEach(s => obj[s.pos] = s.color);
+  return obj;
+}
+
+function makeLayer(name) {
+  const id = layerIdCounter++;
+  const layer = {
+    id, name: name || ('Layer ' + id),
+    criteria: '',
+    visible: true,
+    points: [], pointOwners: [], strokes: [], polygons: [],
+    radius: 25, blur: 18, maxIntensity: 1.0,
+    autoExposedMax: null,
+    referenceZoom: map.getZoom(),
+    gradient: JSON.parse(JSON.stringify(DEFAULT_GRADIENT)),
+    paletteName: 'Classic',
+    heatLayer: null
+  };
+  refreshHeatLayer(layer);
+  layers.push(layer);
+  activeLayerId = id;
+  return layer;
+}
+
+const MIN_SCALED_RADIUS = 8, MAX_SCALED_RADIUS = 40;
+
+function zoomScaledOptions(layer) {
+  const factor = Math.pow(2, map.getZoom() - layer.referenceZoom);
+  const scaledRadius = layer.radius * factor;
+  const scaledBlur = layer.blur * factor;
+  const radius = Math.min(MAX_SCALED_RADIUS, Math.max(MIN_SCALED_RADIUS, scaledRadius));
+  const blur = scaledRadius > 0 ? Math.max(1, scaledBlur * (radius / scaledRadius)) : scaledBlur;
+  return {
+    radius, blur,
+    max: (autoExposureEnabled && layer.autoExposedMax != null) ? layer.autoExposedMax : layer.maxIntensity,
+    gradient: gradientArrayToObj(layer.gradient),
+    maxZoom: 0
+  };
+}
+
+function effectiveBlobSizePx(layer) {
+  const opts = zoomScaledOptions(layer);
+  return opts.radius + opts.blur;
+}
+
+const HEAT_CANVAS_BLUR_MIN_PX = 2;
+const HEAT_CANVAS_BLUR_FRACTION = 0.07;
+function canvasBlurPxFor(layer) {
+  return Math.max(HEAT_CANVAS_BLUR_MIN_PX, effectiveBlobSizePx(layer) * HEAT_CANVAS_BLUR_FRACTION);
+}
+
+function applyCanvasBlur(layer) {
+  if (layer.heatLayer && layer.heatLayer._canvas) {
+    layer.heatLayer._canvas.style.filter = `blur(${canvasBlurPxFor(layer)}px)`;
+  }
+}
+
+function rebuildHeatLayer(layer) {
+  if (layer.heatLayer) { map.removeLayer(layer.heatLayer); }
+  const size = map.getSize();
+  if (size.x === 0 || size.y === 0) map.invalidateSize();
+  layer.heatLayer = L.heatLayer(layer.points, zoomScaledOptions(layer));
+  if (layer.visible) layer.heatLayer.addTo(map);
+  applyCanvasBlur(layer);
+}
+
+function refreshHeatLayer(layer) {
+  if (!layer.heatLayer) { rebuildHeatLayer(layer); return; }
+  if (!layer.visible) return;
+  layer.heatLayer.setOptions(zoomScaledOptions(layer));
+  layer.heatLayer.setLatLngs(layer.points);
+}
+
+/* ---------------- Auto Exposure ---------------- */
+let autoExposureEnabled = false;
+const btnAutoExposure = document.getElementById('btnAutoExposure');
+
+function measurePeakAlphaAtMax(layer, max, rect) {
+  layer.heatLayer.options.max = max;
+  layer.heatLayer._heat.max(max);
+  layer.heatLayer._redraw();
+  try {
+    const canvas = layer.heatLayer._canvas;
+    const ctx = canvas.getContext('2d');
+    const data = ctx.getImageData(rect.x, rect.y, rect.w, rect.h).data;
+    let peak = 0;
+    for (let i = 3; i < data.length; i += 4) { if (data[i] > peak) peak = data[i]; }
+    return peak;
+  } catch (e) {
+    return -1;
+  }
+}
+
+function layerScreenRect(layer) {
+  const canvas = layer.heatLayer._canvas;
+  const pad = effectiveBlobSizePx(layer) + 2;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  layer.points.forEach(p => {
+    const pt = map.latLngToContainerPoint([p[0], p[1]]);
+    if (pt.x < minX) minX = pt.x; if (pt.x > maxX) maxX = pt.x;
+    if (pt.y < minY) minY = pt.y; if (pt.y > maxY) maxY = pt.y;
+  });
+  const x = Math.max(0, Math.floor(minX - pad));
+  const y = Math.max(0, Math.floor(minY - pad));
+  const x2 = Math.min(canvas.width, Math.ceil(maxX + pad));
+  const y2 = Math.min(canvas.height, Math.ceil(maxY + pad));
+  return { x, y, w: Math.max(1, x2 - x), h: Math.max(1, y2 - y) };
+}
+
+function autoExposeLayer(layer) {
+  if (!autoExposureEnabled) return;
+  if (!layer || !layer.visible || !layer.heatLayer || !layer.points.length) return;
+  const rect = layerScreenRect(layer);
+  const TARGET_ALPHA = 250;
+  let lo = 0.02, hi = 20;
+  for (let guard = 0; guard < 4 && measurePeakAlphaAtMax(layer, hi, rect) > TARGET_ALPHA; guard++) hi *= 5;
+  for (let guard = 0; guard < 6 && measurePeakAlphaAtMax(layer, lo, rect) < TARGET_ALPHA; guard++) lo /= 5;
+  let converged = true;
+  for (let i = 0; i < 13; i++) {
+    const mid = (lo + hi) / 2;
+    const peak = measurePeakAlphaAtMax(layer, mid, rect);
+    if (peak < 0) { converged = false; break; }
+    if (peak > TARGET_ALPHA) lo = mid; else hi = mid;
+  }
+  if (converged) layer.autoExposedMax = hi;
+  refreshHeatLayer(layer);
+}
+
+let zoomExposureTimer = null;
+function scheduleZoomExposureRecalibration() {
+  if (!autoExposureEnabled) return;
+  if (zoomExposureTimer) clearTimeout(zoomExposureTimer);
+  zoomExposureTimer = setTimeout(() => {
+    zoomExposureTimer = null;
+    layers.forEach(regenerateLayerShapes);
+    layers.forEach(autoExposeLayer);
+  }, 150);
+}
+
+btnAutoExposure.addEventListener('click', () => {
+  autoExposureEnabled = !autoExposureEnabled;
+  btnAutoExposure.classList.toggle('active-toggle', autoExposureEnabled);
+  btnAutoExposure.textContent = autoExposureEnabled ? '🔆 Auto Exposure: ON' : '🔆 Auto Exposure: OFF';
+  if (autoExposureEnabled) {
+    layers.forEach(autoExposeLayer);
+  } else {
+    layers.forEach(refreshHeatLayer);
+  }
+});
+
+function performZoomRegeneration() {
+  layers.forEach(layer => {
+    if (!layer.visible) return;
+    if (layer.heatLayer) layer.heatLayer.setOptions(zoomScaledOptions(layer));
+    applyCanvasBlur(layer);
+    regenerateLayerShapes(layer);
+  });
+  scheduleZoomExposureRecalibration();
+}
+
+let zoomRegenTimer = null;
+let zoomRegenCooldownUntil = 0;
+map.on('zoomend', () => {
+  const now = performance.now();
+  if (now >= zoomRegenCooldownUntil) {
+    performZoomRegeneration();
+    zoomRegenCooldownUntil = now + 150;
+  } else {
+    if (zoomRegenTimer) clearTimeout(zoomRegenTimer);
+    zoomRegenTimer = setTimeout(() => {
+      zoomRegenTimer = null;
+      performZoomRegeneration();
+      zoomRegenCooldownUntil = performance.now() + 150;
+    }, 150);
+  }
+});
+
+let panExposureTimer = null;
+map.on('moveend', () => {
+  layers.forEach(layer => { revealPannedPolygonArea(layer); revealPannedStrokes(layer); });
+  if (!autoExposureEnabled) return;
+  if (panExposureTimer) clearTimeout(panExposureTimer);
+  panExposureTimer = setTimeout(() => {
+    panExposureTimer = null;
+    layers.forEach(regenerateLayerShapes);
+    layers.forEach(autoExposeLayer);
+  }, 150);
+});
+
+function getLayer(id) { return layers.find(l => l.id === id); }
+function getActiveLayer() { return getLayer(activeLayerId); }
+
+function filterLayerPoints(layer, predicate) {
+  const keptPoints = [];
+  const keptOwners = [];
+  layer.points.forEach((p, i) => {
+    if (predicate(p, i)) { keptPoints.push(p); keptOwners.push(layer.pointOwners[i]); }
+  });
+  layer.points = keptPoints;
+  layer.pointOwners = keptOwners;
+}
+
+function toggleLayerVisibility(id) {
+  const layer = getLayer(id);
+  layer.visible = !layer.visible;
+  if (layer.visible) { layer.heatLayer.addTo(map); applyCanvasBlur(layer); } else { map.removeLayer(layer.heatLayer); }
+  layer.polygons.forEach(rec => {
+    if (!rec.outline) return;
+    if (layer.visible) rec.outline.addTo(map); else map.removeLayer(rec.outline);
+  });
+  if (layer.visible) regenerateLayerShapes(layer);
+  renderLayerList();
+}
+
+function gradientCss(stops) {
+  const sorted = stops.slice().sort((a,b)=>a.pos-b.pos);
+  const parts = sorted.map(s => `${s.color} ${Math.round(s.pos*100)}%`);
+  return `linear-gradient(90deg, ${parts.join(',')})`;
+}
+
+function escapeHtml(s) {
+  return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* ---------------- UI: layer list (view-only: visibility toggle + read-only description) ---------------- */
+const layerListEl = document.getElementById('layerList');
+
+function renderLayerList() {
+  layerListEl.innerHTML = '';
+  if (!layers.length) {
+    layerListEl.innerHTML = '<div class="empty-hint">No published data yet.</div>';
+    updateLegend();
+    return;
+  }
+  layers.slice().reverse().forEach(layer => {
+    const card = document.createElement('div');
+    card.className = 'layer-card' + (layer.id === activeLayerId ? ' selected' : '');
+    card.dataset.id = layer.id;
+    card.innerHTML = `
+      <div class="layer-row">
+        <label class="switch">
+          <input type="checkbox" ${layer.visible ? 'checked' : ''} class="vis-toggle">
+          <span class="slider-ui"></span>
+        </label>
+        <span class="layer-name">${escapeHtml(layer.name)}</span>
+      </div>
+      <div class="swatch-strip" style="background:${gradientCss(layer.gradient)}"></div>
+      <div class="layer-meta"><span>${layer.polygons.length ? layer.polygons.length + ' shape' + (layer.polygons.length===1?'':'s') : ''}</span></div>
+      ${layer.criteria ? `<div class="criteria-text">${escapeHtml(layer.criteria)}</div>` : ''}
+    `;
+    card.querySelector('.vis-toggle').addEventListener('click', (e) => e.stopPropagation());
+    card.querySelector('.vis-toggle').addEventListener('change', () => toggleLayerVisibility(layer.id));
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('.switch')) return;
+      activeLayerId = layer.id;
+      renderLayerList();
+    });
+    layerListEl.appendChild(card);
+  });
+  updateLegend();
+}
+
+/* ---------------- Gradient axis math (unchanged from the editor — needed to
+   regenerate a gradient zone's fill correctly at any zoom/pan) ---------------- */
+function gradientIntensityAt(lat, lng, path, iStart, iEnd, type) {
+  const start = path[0], end = path[path.length - 1];
+  if (type === 'radial') {
+    const mLat = 111320, mLng = 111320 * Math.cos(start.lat * Math.PI / 180) || 1;
+    const bx = (end.lng - start.lng) * mLng, by = (end.lat - start.lat) * mLat;
+    const px = (lng - start.lng) * mLng, py = (lat - start.lat) * mLat;
+    const radius = Math.sqrt(bx * bx + by * by);
+    if (radius === 0) return iStart;
+    let t = Math.sqrt(px * px + py * py) / radius;
+    t = Math.min(1, Math.max(0, t));
+    return iStart + t * (iEnd - iStart);
+  }
+  return gradientIntensityAlongPath(lat, lng, path, iStart, iEnd);
+}
+
+function gradientIntensityAlongPath(lat, lng, path, iStart, iEnd) {
+  const frac = projectOntoPath(lat, lng, path).frac;
+  return iStart + frac * (iEnd - iStart);
+}
+
+function projectOntoPath(lat, lng, path) {
+  const refLat = path[0].lat;
+  const mLat = 111320, mLng = 111320 * Math.cos(refLat * Math.PI / 180) || 1;
+  const pts = path.map(p => ({ x: p.lng * mLng, y: p.lat * mLat }));
+  const query = { x: lng * mLng, y: lat * mLat };
+  const segLens = [];
+  let totalLen = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const dx = pts[i + 1].x - pts[i].x, dy = pts[i + 1].y - pts[i].y;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    segLens.push(len);
+    totalLen += len;
+  }
+  if (totalLen === 0) return { dist: Math.hypot(query.x - pts[0].x, query.y - pts[0].y), frac: 0 };
+  let bestDist = Infinity, bestArc = 0, cum = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const lenSq = dx * dx + dy * dy;
+    let t = lenSq === 0 ? 0 : ((query.x - a.x) * dx + (query.y - a.y) * dy) / lenSq;
+    t = Math.min(1, Math.max(0, t));
+    const projX = a.x + t * dx, projY = a.y + t * dy;
+    const dist = Math.hypot(query.x - projX, query.y - projY);
+    if (dist < bestDist) { bestDist = dist; bestArc = cum + t * segLens[i]; }
+    cum += segLens[i];
+  }
+  return { dist: bestDist, frac: Math.min(1, Math.max(0, bestArc / totalLen)) };
+}
+
+function axisOwnershipDistance(lat, lng, axis) {
+  const path = axis.path.map(p => L.latLng(p[0], p[1]));
+  if (axis.type === 'radial') {
+    const center = path[0];
+    const mLat = 111320, mLng = 111320 * Math.cos(center.lat * Math.PI / 180) || 1;
+    return Math.hypot((lng - center.lng) * mLng, (lat - center.lat) * mLat);
+  }
+  return projectOntoPath(lat, lng, path).dist;
+}
+
+function multiAxisGradientIntensity(lat, lng, axes) {
+  if (!axes.length) return 0;
+  if (axes.length === 1) {
+    const axis = axes[0];
+    const path = axis.path.map(p => L.latLng(p[0], p[1]));
+    return gradientIntensityAt(lat, lng, path, axis.intensityStart, axis.intensityEnd, axis.type);
+  }
+  let weightedSum = 0, totalWeight = 0;
+  for (const axis of axes) {
+    const d = axisOwnershipDistance(lat, lng, axis);
+    const path = axis.path.map(p => L.latLng(p[0], p[1]));
+    const value = gradientIntensityAt(lat, lng, path, axis.intensityStart, axis.intensityEnd, axis.type);
+    const weight = 1 / ((d + 1) * (d + 1));
+    weightedSum += value * weight;
+    totalWeight += weight;
+  }
+  return totalWeight > 0 ? weightedSum / totalWeight : 0;
+}
+
+function migrateGradientAxes(data) {
+  if (Array.isArray(data.gradientAxes) && data.gradientAxes.length) {
+    data.gradientAxes.forEach(a => {
+      if (typeof a.id === 'number') axisIdCounter = Math.max(axisIdCounter, a.id + 1);
+      else a.id = axisIdCounter++;
+    });
+    return data.gradientAxes;
+  }
+  const path = data.gradientPath || (data.gradientStart && data.gradientEnd ? [data.gradientStart, data.gradientEnd] : null);
+  if (!path) return [];
+  return [{
+    id: axisIdCounter++,
+    path,
+    type: data.gradientType === 'radial' ? 'radial' : 'linear',
+    intensityStart: typeof data.intensityStart === 'number' ? data.intensityStart : 0.1,
+    intensityEnd: typeof data.intensityEnd === 'number' ? data.intensityEnd : 0.9
+  }];
+}
+
+function ensureGradientAxes(record) {
+  if (record.gradientAxes && record.gradientAxes.length) return record.gradientAxes;
+  return (record.gradientAxes = migrateGradientAxes(record));
+}
+
+/* ---------------- Read-only shape info popup ---------------- */
+function createPolygonOutline(layer, record) {
+  const outline = L.polygon(record.vertices, {
+    pane: 'polygonPane', color: '#4f9dff', weight: 2, opacity: 0, fillOpacity: 0
+  });
+  outline.on('click', (e) => {
+    L.DomEvent.stopPropagation(e);
+    const axes = record.isGradient ? ensureGradientAxes(record) : [];
+    const desc = record.isGradient
+      ? `Gradient zone, ${axes.length} ${axes.length === 1 ? 'axis' : 'axes'}`
+      : `Zone, intensity ${(record.intensity || 0).toFixed(2)}`;
+    L.popup({ className: 'polygon-edit-popup' })
+      .setLatLng(e.latlng)
+      .setContent(`<div style="font-size:12px;"><strong>${escapeHtml(layer.name)}</strong><br>${escapeHtml(desc)}</div>`)
+      .openOn(map);
+  });
+  outline.on('mouseover', () => outline.setStyle({ opacity: 0.6, fillOpacity: 0.1 }));
+  outline.on('mouseout', () => outline.setStyle({ opacity: 0, fillOpacity: 0 }));
+  if (layer.visible) outline.addTo(map);
+  return outline;
+}
+
+function pointInPolygon(lat, lng, verts) {
+  let inside = false;
+  for (let i = 0, j = verts.length - 1; i < verts.length; j = i++) {
+    const xi = verts[i].lng, yi = verts[i].lat;
+    const xj = verts[j].lng, yj = verts[j].lat;
+    const intersect = ((yi > lat) !== (yj > lat)) &&
+      (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function metersPerPixel(lat, zoom) {
+  return 156543.03392 * Math.cos(lat * Math.PI / 180) / Math.pow(2, zoom);
+}
+
+function binNormalizationFactor(fraction, dimensions) {
+  const perBinRatio = 1 / (2 * fraction);
+  const factor = dimensions === 2 ? perBinRatio * perBinRatio : perBinRatio;
+  return Math.max(1, factor);
+}
+
+function zoomOverlapCorrection(layer) {
+  const zoomFactor = Math.pow(2, map.getZoom() - layer.referenceZoom);
+  const unclamped = (layer.radius + layer.blur) * zoomFactor;
+  if (unclamped <= 0) return 1;
+  return effectiveBlobSizePx(layer) / unclamped;
+}
+
+const HEAT_GAMMA = 3.0;
+function applyHeatGamma(v) { return Math.pow(Math.max(0, Math.min(1, v)), HEAT_GAMMA); }
+
+function isErased(lat, lng, eraseMarks) {
+  if (!eraseMarks || !eraseMarks.length) return false;
+  const mLat = 111320, mLng = 111320 * Math.cos(lat * Math.PI / 180) || 1;
+  for (const mark of eraseMarks) {
+    const dLat = (lat - mark.lat) * mLat;
+    const dLng = (lng - mark.lng) * mLng;
+    if (Math.sqrt(dLat * dLat + dLng * dLng) <= mark.radiusMeters) return true;
+  }
+  return false;
+}
+
+function overrideIntensityAt(lat, lng, overrides) {
+  if (!overrides || !overrides.length) return null;
+  const mLat = 111320, mLng = 111320 * Math.cos(lat * Math.PI / 180) || 1;
+  let found = null;
+  for (const mark of overrides) {
+    const dLat = (lat - mark.lat) * mLat;
+    const dLng = (lng - mark.lng) * mLng;
+    if (Math.sqrt(dLat * dLat + dLng * dLng) <= mark.radiusMeters) found = mark.intensity;
+  }
+  return found;
+}
+
+function boostFactorAt(lat, lng, boostMarks) {
+  if (!boostMarks || !boostMarks.length) return 0;
+  const mLat = 111320, mLng = 111320 * Math.cos(lat * Math.PI / 180) || 1;
+  let total = 0;
+  for (const mark of boostMarks) {
+    const dLat = (lat - mark.lat) * mLat;
+    const dLng = (lng - mark.lng) * mLng;
+    const dist = Math.sqrt(dLat * dLat + dLng * dLng);
+    if (dist >= mark.radiusMeters) continue;
+    const t = dist / mark.radiusMeters;
+    const falloff = 0.5 * (1 + Math.cos(Math.PI * t));
+    total += mark.boost * falloff;
+  }
+  return Math.min(1.5, total);
+}
+
+function viewportClippedBounds(polyBounds) {
+  return intersectBounds(polyBounds, map.getBounds().pad(0.15));
+}
+
+function intersectBounds(a, b) {
+  const south = Math.max(a.getSouth(), b.getSouth());
+  const north = Math.min(a.getNorth(), b.getNorth());
+  const west = Math.max(a.getWest(), b.getWest());
+  const east = Math.min(a.getEast(), b.getEast());
+  if (south >= north || west >= east) return null;
+  return L.latLngBounds([south, west], [north, east]);
+}
+
+function fillPolygonWithHeat(layer, verts, intensityFn, fillFraction, polygonId, eraseMarks, intensityOverrides, boostMarks, maxSamplesOverride) {
+  const fullBounds = L.latLngBounds(verts);
+  const clipped = viewportClippedBounds(fullBounds);
+  if (!clipped) return 0;
+  const south = clipped.getSouth(), north = clipped.getNorth(), west = clipped.getWest(), east = clipped.getEast();
+  const centerLat = (south + north) / 2;
+  let gridMeters = Math.max(1, (layer.radius + layer.blur) * fillFraction * metersPerPixel(centerLat, layer.referenceZoom));
+  const metersPerDegLat = 111320;
+  const metersPerDegLng = 111320 * Math.cos(centerLat * Math.PI / 180) || 1;
+  const maxSamples = maxSamplesOverride || 150000;
+  const bboxWidthM = (east - west) * metersPerDegLng;
+  const bboxHeightM = (north - south) * metersPerDegLat;
+  const estimatedSamples = (bboxWidthM / gridMeters) * (bboxHeightM / gridMeters);
+  if (estimatedSamples > maxSamples) {
+    gridMeters *= Math.sqrt(estimatedSamples / maxSamples);
+  }
+  const latStep = gridMeters / metersPerDegLat;
+  const lngStep = gridMeters / metersPerDegLng;
+  const candidates = [];
+  outer:
+  for (let lat = south, rowIdx = 0; lat <= north; lat += latStep, rowIdx++) {
+    for (let lng = west, colIdx = 0; lng <= east; lng += lngStep, colIdx++) {
+      const cellSeed = rowIdx * 92821 + colIdx * 68917;
+      const jLat = lat + (seededRandom(cellSeed) - 0.5) * latStep * 0.85;
+      const jLng = lng + (seededRandom(cellSeed + 1) - 0.5) * lngStep * 0.85;
+      if (pointInPolygon(jLat, jLng, verts) && !isErased(jLat, jLng, eraseMarks)) {
+        candidates.push([jLat, jLng, lat, lng]);
+        if (candidates.length >= maxSamples) break outer;
+      }
+    }
+  }
+  const normFactor = Math.min(binNormalizationFactor(fillFraction, 2) * zoomOverlapCorrection(layer), Math.max(1, candidates.length));
+  candidates.forEach(([jLat, jLng, gLat, gLng]) => {
+    const overridden = overrideIntensityAt(jLat, jLng, intensityOverrides);
+    const raw = overridden !== null ? overridden : intensityFn(gLat, gLng);
+    const boosted = Math.min(1, raw * (1 + boostFactorAt(jLat, jLng, boostMarks)));
+    layer.points.push([jLat, jLng, applyHeatGamma(boosted) / normFactor]);
+    layer.pointOwners.push(polygonId);
+  });
+  const added = candidates.length;
+  if (added > 0) refreshHeatLayer(layer);
+  return added;
+}
+
+function seededRandom(seed) {
+  let t = seed + 0x6D2B79F5;
+  t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
+const SPRAY_POINTS_PER_CLUSTER = 5;
+const SPRAY_RADIUS_FRACTION = 0.7;
+
+function resamplePathPoints(layer, path, spacingFraction, eraseMarks) {
+  if (!path.length) return [];
+  const targetSpacingPx = Math.max(2, effectiveBlobSizePx(layer) * spacingFraction);
+  const centers = [path[0]];
+  let carry = 0;
+  for (let i = 1; i < path.length; i++) {
+    const a = path[i - 1], b = path[i];
+    const aPt = map.latLngToContainerPoint(a);
+    const bPt = map.latLngToContainerPoint(b);
+    const segLen = aPt.distanceTo(bPt);
+    if (segLen === 0) continue;
+    let dist = targetSpacingPx - carry;
+    while (dist <= segLen) {
+      const t = dist / segLen;
+      centers.push({ lat: a.lat + (b.lat - a.lat) * t, lng: a.lng + (b.lng - a.lng) * t });
+      dist += targetSpacingPx;
+    }
+    carry = segLen - (dist - targetSpacingPx);
+  }
+  const scatterRadiusPx = zoomScaledOptions(layer).radius * SPRAY_RADIUS_FRACTION;
+  const result = [];
+  centers.forEach((c, ci) => {
+    const mLat = 111320, mLng = 111320 * Math.cos(c.lat * Math.PI / 180) || 1;
+    const scatterRadiusM = scatterRadiusPx * metersPerPixel(c.lat, map.getZoom());
+    for (let k = 0; k < SPRAY_POINTS_PER_CLUSTER; k++) {
+      const seed = ci * 97 + k * 131;
+      const angle = seededRandom(seed) * Math.PI * 2;
+      const r = scatterRadiusM * Math.sqrt(seededRandom(seed + 1));
+      result.push({ lat: c.lat + (Math.sin(angle) * r) / mLat, lng: c.lng + (Math.cos(angle) * r) / mLng });
+    }
+  });
+  return result.filter(p => !isErased(p.lat, p.lng, eraseMarks));
+}
+
+function appendStrokePoints(layer, strokeRecord) {
+  const clipped = viewportClippedBounds(L.latLngBounds(strokeRecord.path));
+  strokeRecord._lastFillBounds = clipped;
+  strokeRecord._lastFillZoom = map.getZoom();
+  if (!clipped) return 0;
+  const resampled = resamplePathPoints(layer, strokeRecord.path, strokeRecord.spacingFraction, strokeRecord.eraseMarks);
+  const normFactor = Math.min(binNormalizationFactor(strokeRecord.spacingFraction, 2), Math.max(1, resampled.length));
+  resampled.forEach(pt => {
+    const overridden = overrideIntensityAt(pt.lat, pt.lng, strokeRecord.intensityOverrides);
+    const raw = overridden !== null ? overridden : strokeRecord.intensity;
+    const boosted = Math.min(1, raw * (1 + boostFactorAt(pt.lat, pt.lng, strokeRecord.boostMarks)));
+    layer.points.push([pt.lat, pt.lng, applyHeatGamma(boosted) / normFactor]);
+    layer.pointOwners.push(strokeRecord.id);
+  });
+}
+
+function appendPolygonPoints(layer, rec, maxSamplesOverride) {
+  const vertsLL = rec.vertices.map(v => L.latLng(v[0], v[1]));
+  if (rec.isGradient) {
+    const axes = ensureGradientAxes(rec);
+    fillPolygonWithHeat(
+      layer, vertsLL, (lat, lng) => multiAxisGradientIntensity(lat, lng, axes),
+      rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks, maxSamplesOverride
+    );
+  } else {
+    fillPolygonWithHeat(layer, vertsLL, () => rec.intensity, rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks, maxSamplesOverride);
+  }
+  rec._lastFillBounds = viewportClippedBounds(L.latLngBounds(vertsLL));
+  rec._lastFillZoom = map.getZoom();
+}
+
+const LAYER_FILL_BUDGET = 120000;
+
+function regenerateLayerShapes(layer) {
+  if (!layer.visible) return;
+  if (!layer.strokes.length && !layer.polygons.length) return;
+  const shapeIds = new Set();
+  layer.strokes.forEach(s => shapeIds.add(s.id));
+  layer.polygons.forEach(p => shapeIds.add(p.id));
+  filterLayerPoints(layer, (p, i) => !shapeIds.has(layer.pointOwners[i]));
+  layer.strokes.forEach(s => appendStrokePoints(layer, s));
+  const visiblePolygons = layer.polygons.filter(p => viewportClippedBounds(L.latLngBounds(p.vertices.map(v => L.latLng(v[0], v[1])))));
+  const perShapeBudget = visiblePolygons.length ? Math.max(2000, Math.floor(LAYER_FILL_BUDGET / visiblePolygons.length)) : 150000;
+  layer.polygons.forEach(p => appendPolygonPoints(layer, p, perShapeBudget));
+  refreshHeatLayer(layer);
+}
+
+function revealPannedPolygonArea(layer) {
+  if (!layer.visible || !layer.polygons.length) return;
+  const currentZoom = map.getZoom();
+  const toRegen = layer.polygons.filter(rec => {
+    if (rec._lastFillZoom !== currentZoom) return true;
+    const vertsLL = rec.vertices.map(v => L.latLng(v[0], v[1]));
+    const clipped = viewportClippedBounds(L.latLngBounds(vertsLL));
+    if (!clipped) return !!rec._lastFillBounds;
+    return !(rec._lastFillBounds && rec._lastFillBounds.contains(clipped));
+  });
+  if (!toRegen.length) return;
+  const ids = new Set(toRegen.map(r => r.id));
+  filterLayerPoints(layer, (p, i) => !ids.has(layer.pointOwners[i]));
+  toRegen.forEach(rec => appendPolygonPoints(layer, rec));
+  refreshHeatLayer(layer);
+}
+
+function revealPannedStrokes(layer) {
+  if (!layer.visible || !layer.strokes.length) return;
+  const currentZoom = map.getZoom();
+  const toRegen = layer.strokes.filter(s => {
+    if (s._lastFillZoom !== currentZoom) return true;
+    const clipped = viewportClippedBounds(L.latLngBounds(s.path));
+    if (!clipped) return !!s._lastFillBounds;
+    return !(s._lastFillBounds && s._lastFillBounds.contains(clipped));
+  });
+  if (!toRegen.length) return;
+  const ids = new Set(toRegen.map(s => s.id));
+  filterLayerPoints(layer, (p, i) => !ids.has(layer.pointOwners[i]));
+  toRegen.forEach(s => appendStrokePoints(layer, s));
+  refreshHeatLayer(layer);
+}
+
+/* ---------------- Loading published data ---------------- */
+function loadHeatmapData(data) {
+  layers.forEach(l => { if (l.heatLayer) map.removeLayer(l.heatLayer); l.polygons.forEach(p => { if (p.outline) map.removeLayer(p.outline); }); });
+  layers = [];
+  (data.layers || []).forEach(ld => {
+    const layer = makeLayer(ld.name);
+    layer.criteria = ld.criteria || '';
+    layer.visible = ld.visible !== false;
+    layer.points = ld.points || [];
+    layer.pointOwners = ld.pointOwners || layer.points.map(() => null);
+    layer.radius = ld.radius || 25;
+    layer.blur = ld.blur || 18;
+    layer.maxIntensity = ld.maxIntensity || 1.0;
+    layer.gradient = ld.gradient || JSON.parse(JSON.stringify(DEFAULT_GRADIENT));
+    layer.paletteName = ld.paletteName || null;
+    layer.referenceZoom = typeof ld.referenceZoom === 'number' ? ld.referenceZoom : map.getZoom();
+    layer.strokes = (ld.strokes || []).map(sd => {
+      polygonIdCounter = Math.max(polygonIdCounter, sd.id + 1);
+      return { id: sd.id, path: sd.path, intensity: sd.intensity, spacingFraction: sd.spacingFraction, eraseMarks: sd.eraseMarks || [], intensityOverrides: sd.intensityOverrides || [], boostMarks: sd.boostMarks || [] };
+    });
+    layer.polygons = (ld.polygons || []).map(pd => {
+      const record = {
+        id: pd.id, vertices: pd.vertices, fillFraction: pd.fillFraction, isGradient: !!pd.isGradient,
+        gradientAxes: pd.isGradient ? migrateGradientAxes(pd) : undefined,
+        intensity: pd.intensity,
+        eraseMarks: pd.eraseMarks || [],
+        intensityOverrides: pd.intensityOverrides || [],
+        boostMarks: pd.boostMarks || [],
+        outline: null
+      };
+      record.outline = createPolygonOutline(layer, record);
+      polygonIdCounter = Math.max(polygonIdCounter, pd.id + 1);
+      return record;
+    });
+    // The exported "points" cache was baked at whatever zoom/viewport the editor
+    // happened to be at when published — which has no reason to match this
+    // viewer's own starting CENTER/ZOOM (or whatever the visitor pans to first).
+    // Standalone points (no owning shape) have no source geometry to regenerate
+    // from, so those stay as-imported; regenerateLayerShapes strips every
+    // shape-OWNED point and refills strokes/polygons fresh from their vertices/
+    // path for the CURRENT view, same as the editor already does on every zoom —
+    // this just makes sure that happens once immediately on load too, instead of
+    // showing nothing until the visitor's first zoom or pan.
+    regenerateLayerShapes(layer);
+    if (!layer.visible) map.removeLayer(layer.heatLayer);
+  });
+  renderLayerList();
+}
+
+function fetchAndLoad() {
+  layerListEl.innerHTML = '<div class="empty-hint">Loading published data…</div>';
+  // Cache-busted so a fresh publish shows up on reload instead of a stale
+  // browser-cached copy of the data file.
+  fetch('heatmap-data.json?_=' + Date.now())
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(loadHeatmapData)
+    .catch(err => {
+      layerListEl.innerHTML = `<div class="empty-hint">Couldn't load heatmap-data.json.<br>${escapeHtml(err.message)}<br><br>Publish a data file next to this page (see the editor's "Export for Viewer" button).</div>`;
+    });
+}
+document.getElementById('btnReload').addEventListener('click', fetchAndLoad);
+
+/* ---------------- Init ---------------- */
+function waitForMapReady(callback, attemptsLeft) {
+  if (attemptsLeft === undefined) attemptsLeft = 40;
+  map.invalidateSize();
+  const size = map.getSize();
+  if ((size.x > 0 && size.y > 0) || attemptsLeft <= 0) {
+    callback();
+  } else {
+    setTimeout(() => waitForMapReady(callback, attemptsLeft - 1), 50);
+  }
+}
+
+waitForMapReady(fetchAndLoad);
+</script>
+</body>
+</html>
