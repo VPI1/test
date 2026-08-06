@@ -137,6 +137,12 @@
   }
   #searchInput:focus{outline:none;border-color:var(--accent);}
   #searchIcon{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--sub);pointer-events:none;font-size:13px;}
+  #searchClearBtn{
+    position:absolute;right:6px;top:50%;transform:translateY(-50%);display:none;
+    width:22px;height:22px;padding:0;align-items:center;justify-content:center;
+    border:none;background:transparent;color:var(--sub);border-radius:50%;cursor:pointer;
+  }
+  #searchClearBtn:hover{background:var(--panel3);color:var(--text);}
   #searchResults{
     margin-top:6px;background:var(--panel);border:1px solid var(--border);border-radius:10px;
     overflow:hidden;box-shadow:0 4px 14px #0007;display:none;max-height:260px;overflow-y:auto;
@@ -179,11 +185,7 @@
   .coord-popup button{padding:3px 6px;font-size:10.5px;}
   .coord-popup .cp-share{width:100%;margin-top:4px;}
 
-  .search-pin-popup{font-size:12px;}
   .search-pin-icon{background:none;border:none;}
-  .search-marker-popup .leaflet-popup-close-button{
-    width:28px;height:28px;font-size:20px;line-height:28px;top:2px;right:2px;
-  }
 </style>
 </head>
 <body>
@@ -238,6 +240,7 @@
   <div style="position:relative;">
     <span id="searchIcon"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"/><line x1="20" y1="20" x2="15.5" y2="15.5"/></svg></span>
     <input id="searchInput" type="text" placeholder="Search settlements, MGRS, or coordinates…" autocomplete="off">
+    <button id="searchClearBtn" title="Clear"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg></button>
   </div>
   <div id="searchResults"></div>
 </div>
@@ -460,8 +463,8 @@ const basemaps = {
     maxZoom: 19, attribution: 'Esri World Topo Map'
   })
 };
-const basemapLabels = { google:'Google', ghybrid:'Google Hybrid', osm:'OpenStreetMap', esri:'Esri Imagery', esriDarkGray:'Esri Dark Gray', esriTopo:'Esri Topographic' };
-let currentBasemapKey = 'esriDarkGray';
+const basemapLabels = { google:'Google Satellite', ghybrid:'Google Hybrid', osm:'OpenStreetMap', esri:'Esri Imagery', esriDarkGray:'Esri Dark Gray', esriTopo:'Esri Topographic' };
+let currentBasemapKey = 'google';
 basemaps[currentBasemapKey].addTo(map);
 
 const BasemapControl = L.Control.extend({
@@ -1707,6 +1710,7 @@ document.getElementById('btnDrawSave').addEventListener('click', () => {
 /* ---------------- Fast search (settlements / MGRS / WGS-84) ---------------- */
 const searchInput = document.getElementById('searchInput');
 const searchResultsEl = document.getElementById('searchResults');
+const searchClearBtn = document.getElementById('searchClearBtn');
 let searchMarker = null;
 let searchOutline = null;
 let searchDebounceTimer = null;
@@ -1726,24 +1730,29 @@ function parseLatLngInput(q) {
   return { lat, lng };
 }
 
+function updateSearchClearBtn() {
+  searchClearBtn.style.display = (searchInput.value || searchMarker) ? 'flex' : 'none';
+}
+
 function clearSearchMarker() {
   const marker = searchMarker, outline = searchOutline;
   searchMarker = null; searchOutline = null;
-  if (marker) { marker.off('popupclose'); map.removeLayer(marker); }
+  if (marker) map.removeLayer(marker);
   if (outline) map.removeLayer(outline);
+  updateSearchClearBtn();
 }
 
 function placeSearchMarker(lat, lng, label, geojson) {
   clearSearchMarker();
   if (geojson) {
     searchOutline = L.geoJSON(geojson, {
-      style: { color: '#3254ad', weight: 2.5, fillColor: '#3254ad', fillOpacity: 0.12 }
+      style: { color: '#ff6a00', weight: 2.5, fillColor: '#ff6a00', fillOpacity: 0.12 }
     }).addTo(map);
   }
   searchMarker = L.marker([lat, lng], { icon: searchPinIcon }).addTo(map);
-  searchMarker.bindPopup(`<div class="search-pin-popup">${escapeHtml(label || '')}</div>`, { className: 'search-marker-popup' }).openPopup();
-  searchMarker.on('popupclose', clearSearchMarker);
+  updateSearchClearBtn();
 }
+map.on('click', clearSearchMarker);
 
 function goToResult(lat, lng, label, zoom, geojson) {
   if (geojson) map.fitBounds(L.geoJSON(geojson).getBounds().pad(0.1));
@@ -1751,6 +1760,7 @@ function goToResult(lat, lng, label, zoom, geojson) {
   placeSearchMarker(lat, lng, label, geojson);
   searchResultsEl.style.display = 'none';
   searchInput.value = label || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+  updateSearchClearBtn();
 }
 
 function renderSearchResults(items) {
@@ -1767,18 +1777,22 @@ function renderSearchResults(items) {
   });
 }
 
-function runSearch(query) {
+function runSearch(query, autoGo) {
   const q = query.trim();
   if (!q) { searchResultsEl.style.display = 'none'; return; }
 
   const mgrsHit = mgrsToLatLng(q);
   if (mgrsHit) {
-    renderSearchResults([{ main: `MGRS ${q.toUpperCase().replace(/\s+/g, '')}`, sub: `${mgrsHit.lat.toFixed(5)}, ${mgrsHit.lng.toFixed(5)}`, lat: mgrsHit.lat, lng: mgrsHit.lng, zoom: 15 }]);
+    const item = { main: `MGRS ${q.toUpperCase().replace(/\s+/g, '')}`, sub: `${mgrsHit.lat.toFixed(5)}, ${mgrsHit.lng.toFixed(5)}`, lat: mgrsHit.lat, lng: mgrsHit.lng, zoom: 15 };
+    if (autoGo) goToResult(item.lat, item.lng, item.main, item.zoom);
+    else renderSearchResults([item]);
     return;
   }
   const coordHit = parseLatLngInput(q);
   if (coordHit) {
-    renderSearchResults([{ main: `${coordHit.lat.toFixed(5)}, ${coordHit.lng.toFixed(5)}`, sub: 'Coordinates', lat: coordHit.lat, lng: coordHit.lng, zoom: 15 }]);
+    const item = { main: `${coordHit.lat.toFixed(5)}, ${coordHit.lng.toFixed(5)}`, sub: 'Coordinates', lat: coordHit.lat, lng: coordHit.lng, zoom: 15 };
+    if (autoGo) goToResult(item.lat, item.lng, item.main, item.zoom);
+    else renderSearchResults([item]);
     return;
   }
   if (q.length < 3) { searchResultsEl.style.display = 'none'; return; }
@@ -1786,21 +1800,32 @@ function runSearch(query) {
   searchAbortController = new AbortController();
   fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=6&accept-language=en&polygon_geojson=1&q=${encodeURIComponent(q)}`, { signal: searchAbortController.signal })
     .then(r => r.json())
-    .then(results => renderSearchResults(results.map(r => ({
-      main: r.display_name.split(',')[0], sub: r.display_name,
-      lat: parseFloat(r.lat), lng: parseFloat(r.lon), zoom: 13,
-      geojson: r.geojson && (r.geojson.type === 'Polygon' || r.geojson.type === 'MultiPolygon') ? r.geojson : null
-    }))))
-    .catch(err => { if (err.name !== 'AbortError') renderSearchResults([]); });
+    .then(results => {
+      const items = results.map(r => ({
+        main: r.display_name.split(',')[0], sub: r.display_name,
+        lat: parseFloat(r.lat), lng: parseFloat(r.lon), zoom: 13,
+        geojson: r.geojson && (r.geojson.type === 'Polygon' || r.geojson.type === 'MultiPolygon') ? r.geojson : null
+      }));
+      if (autoGo) { if (items.length) goToResult(items[0].lat, items[0].lng, items[0].main, items[0].zoom, items[0].geojson); }
+      else renderSearchResults(items);
+    })
+    .catch(err => { if (err.name !== 'AbortError' && !autoGo) renderSearchResults([]); });
 }
 
 searchInput.addEventListener('input', () => {
+  updateSearchClearBtn();
   clearTimeout(searchDebounceTimer);
   searchDebounceTimer = setTimeout(() => runSearch(searchInput.value), 350);
 });
 searchInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { clearTimeout(searchDebounceTimer); runSearch(searchInput.value); }
+  if (e.key === 'Enter') { clearTimeout(searchDebounceTimer); runSearch(searchInput.value, true); }
   if (e.key === 'Escape') { searchResultsEl.style.display = 'none'; searchInput.blur(); }
+});
+searchClearBtn.addEventListener('click', () => {
+  searchInput.value = '';
+  clearSearchMarker();
+  searchResultsEl.style.display = 'none';
+  searchInput.focus();
 });
 document.addEventListener('click', (e) => { if (!e.target.closest('#searchBox')) searchResultsEl.style.display = 'none'; });
 
