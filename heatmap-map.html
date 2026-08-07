@@ -44,11 +44,20 @@
   #map{flex:1;height:100%;background:var(--bg);}
   #sidebar{
     width:340px;min-width:340px;background:var(--panel);border-left:1px solid var(--border);
-    display:flex;flex-direction:column;overflow:hidden;
+    display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;
   }
   .sidebar-header{padding:16px 18px 12px;border-bottom:1px solid var(--border);}
   .sidebar-header h1{font-size:14.5px;margin:0 0 2px;font-weight:700;letter-spacing:.01em;}
   .sidebar-header p{font-size:11px;color:var(--sub);margin:0;}
+  .credit-block{
+    display:flex;flex-direction:column;gap:6px;align-items:flex-end;
+    padding:12px 14px;margin-top:auto;border-top:1px solid var(--border);
+  }
+  .credit-block a{
+    display:inline-flex;align-items:center;gap:5px;color:var(--sub);font-size:11px;
+    text-decoration:none;transition:color .12s;
+  }
+  .credit-block a:hover{color:var(--accent);}
   .toolbar{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:6px;}
   button{
     background:var(--panel2);color:var(--text);border:1px solid var(--border);
@@ -65,7 +74,7 @@
   button.active-toggle{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;}
   button.active-toggle:hover{background:var(--accent-hover);border-color:var(--accent-hover);}
   button.small{padding:5px 8px;font-size:11px;}
-  #layerList{flex:1;overflow-y:auto;padding:8px;}
+  #layerList{padding:8px;}
   .layer-card{
     background:var(--panel2);border:1px solid var(--border);border-radius:var(--radius);
     margin-bottom:8px;padding:11px;transition:.12s;
@@ -304,8 +313,8 @@
       </div>
       <div class="slider-row" title="Ceiling on how bright overlapping paint strokes can get in this layer, regardless of how many times you paint over the same spot — the same value as this layer's Settings > Max, exposed here so you don't have to leave the paint tool to adjust it."><label style="width:56px">Int. Limit</label><input id="brushMaxIntensity" type="range" min="1" max="100" value="100"><span id="brushMaxIntensityVal">1.00</span></div>
       <div class="slider-row" title="Strength of the Correct tool — how much more intense the brushed spot gets at its very center. Feathers smoothly down to no change at all at the brush's edge, and builds up further the more you brush over the same spot."><label style="width:56px">Boost %</label><input id="brushBoost" type="range" min="5" max="100" value="30"><span id="brushBoostVal">0.30</span></div>
-      <div class="slider-row" title="Point spacing while dragging, as a % of the current blob's visual reach. Lower = smoother/denser, and holds up across more zoom levels."><label style="width:56px">Spacing %</label><input id="brushSpacing" type="range" min="3" max="100" value="10"><span id="brushSpacingVal">10</span></div>
-      <div class="slider-row" title="Polygon/zone fill density, as a % of the brush's visual reach. Lower = smoother/denser, and holds up across more zoom levels."><label style="width:56px">Fill %</label><input id="fillSpacing" type="range" min="3" max="100" value="10"><span id="fillSpacingVal">10</span></div>
+      <div class="slider-row" title="Point spacing while dragging, as a % of the current blob's visual reach. Lower = smoother/denser, and holds up across more zoom levels."><label style="width:56px">Spacing %</label><input id="brushSpacing" type="range" min="3" max="100" value="15"><span id="brushSpacingVal">15</span></div>
+      <div class="slider-row" title="Polygon/zone fill density, as a % of the brush's visual reach. Lower = smoother/denser, and holds up across more zoom levels."><label style="width:56px">Fill %</label><input id="fillSpacing" type="range" min="3" max="100" value="15"><span id="fillSpacingVal">15</span></div>
       <div class="slider-row" title="Intensity at the gradient's start point"><label style="width:56px">Grad start</label><input id="gradStartNum" type="number" min="0" max="1" step="0.01" value="0.10" style="width:100%;background:#00000030;border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:11px;padding:3px 6px;"></div>
       <div class="slider-row" title="Intensity at the gradient's end point"><label style="width:56px">Grad end</label><input id="gradEndNum" type="number" min="0" max="1" step="0.01" value="0.90" style="width:100%;background:#00000030;border:1px solid var(--border);color:var(--text);border-radius:4px;font-size:11px;padding:3px 6px;"></div>
       <div class="slider-row" title="Linear: sweeps across the zone along the start→end axis. Radial: rings out from the start point, with the end point setting the radius.">
@@ -352,15 +361,25 @@
       <button id="btnClearActivePoints" class="danger"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg> Clear Points</button>
       <button id="btnExport"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 19h16"/></svg> Export JSON</button>
       <button id="btnImport"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9"/><path d="M7 14l5-5 5 5"/><path d="M4 5h16"/></svg> Import JSON</button>
-      <input type="file" id="fileImport" accept="application/json" style="display:none">
+      <input type="file" id="fileImport" accept="application/json" multiple style="display:none">
       <button id="btnExportGeoJSON"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 19h16"/></svg> Export GeoJSON</button>
       <button id="btnImportGeoJSON"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9"/><path d="M7 14l5-5 5 5"/><path d="M4 5h16"/></svg> Import GeoJSON</button>
-      <input type="file" id="fileImportGeoJSON" accept=".geojson,application/geo+json,application/json" style="display:none">
+      <input type="file" id="fileImportGeoJSON" accept=".geojson,application/geo+json,application/json" multiple style="display:none">
       <button id="btnExportKML" title="Zones as filled polygons, gradient axes as directional lines, painted strokes and standalone points — colored per this layer's own palette, for viewing in Google Earth, QGIS, or similar GIS tools"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 19h16"/></svg> Export KML</button>
       <button id="btnExportForViewer" class="primary" title="Same data as Export JSON, but always named heatmap-data.json — drop it next to heatmap-viewer.html (e.g. push it to your GitHub Pages repo) to publish the current map to read-only viewers. Viewers see whatever was last published, not live edits."><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9"/><path d="M7 14l5-5 5 5"/><path d="M4 5h16"/></svg> Export for Viewer</button>
     </div>
 
     <div id="layerList"></div>
+    <div class="credit-block">
+      <a href="https://x.com/Playfra0" target="_blank" rel="noopener">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18.9 2H22l-7.6 8.7L23 22h-7l-5.5-6.9L4.2 22H1l8.1-9.3L1 2h7.2l5 6.3L18.9 2zm-1.2 18h1.7L6.4 4H4.6l13.1 16z"/></svg>
+        @Playfra0
+      </a>
+      <a href="https://t.me/PlayfraOSINT" target="_blank" rel="noopener">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M21.9 4.3 18.7 20c-.2 1-.9 1.3-1.7.8l-4.7-3.5-2.3 2.2c-.3.3-.5.5-1 .5l.3-4.9 8.9-8c.4-.4-.1-.6-.6-.2L6.6 13 1.9 11.5c-1-.3-1-1 .2-1.5L20.6 3c.8-.3 1.6.2 1.3 1.3z"/></svg>
+        t.me/PlayfraOSINT
+      </a>
+    </div>
   </div>
 </div>
 
@@ -1198,6 +1217,26 @@ function scheduleZoomExposureRecalibration() {
   }, 150);
 }
 
+// Leaflet animates zoom by CSS-transforming (scale + translate) the overlay pane —
+// cheap and GPU-composited on its own, for basically any content. But every heat
+// layer's canvas also carries a CSS `filter: blur(...)` (see applyCanvasBlur), and
+// a transform animating on top of an active blur filter forces the browser onto a
+// much more expensive repaint path every single frame, instead of just moving a
+// pre-rendered texture around — this was measured as the actual source of "zoom
+// stutters, but is fluid with the heatmap toggled off": removing the layer from the
+// map removes the blurred canvas from what's being transformed, not just what's
+// visible. Dropping the filter for the animation's own ~250ms and letting the
+// already-existing zoomend path (performZoomRegeneration -> applyCanvasBlur) restore
+// it once the zoom actually settles keeps the blur for everything BUT that one
+// animated transition, where it was never being usefully perceived anyway (motion
+// blur from the transform itself dominates the frame far more than a few px of
+// filter blur would add).
+map.on('zoomstart', () => {
+  layers.forEach(layer => {
+    if (layer.heatLayer && layer.heatLayer._canvas) layer.heatLayer._canvas.style.filter = 'none';
+  });
+});
+
 // Scroll-wheel zooming can fire several 'zoomend' events in quick succession (one per
 // level the wheel scrolls through) — regenerating every polygon's full grid fill on
 // EACH of those intermediate levels, only to immediately redo it for the next one, was
@@ -1750,6 +1789,8 @@ let mode = 'pan'; // pan | paint | point | erase | polygon | gradient | gradient
 let isDrawing = false;
 let lastPaintPoint = null;
 let currentStroke = null; // {id, path, intensity, spacingFraction, eraseMarks, intensityOverrides} while actively dragging a paint stroke
+let brushRafPending = false;
+let pendingBrushLatLng = null;
 let adjustAffectedLayer = null; // layer touched by the current Adjust drag, so mouseup can auto-expose it once
 let correctAffectedLayer = null; // layer touched by the current Correct drag
 let correctAffectedShapeIds = new Set(); // shapes touched, so mouseup can regenerate them from their canonical (raw*boost, gamma'd) values — the live drag only applies an approximate direct multiply for immediate feedback
@@ -3461,12 +3502,16 @@ function fillPolygonWithHeat(layer, verts, intensityFn, fillFraction, polygonId,
   // candidate-array size, not rendering performance.
   // regenerateLayerShapes passes a smaller, SHARED override when regenerating many
   // polygons at once (a zoom step over a country-scale import with dozens of visible
-  // zones) — this 150000 default is a reasonable ceiling for any ONE shape refilling
-  // on its own (a single Correct/Adjust edit, a pan reveal), but letting dozens of
-  // simultaneously-visible shapes each independently claim up to 150000 is exactly
+  // zones) — this default is a ceiling for any ONE shape refilling on its own (a
+  // single Correct/Adjust edit, a pan reveal), but letting dozens of
+  // simultaneously-visible shapes each independently claim this much is exactly
   // what made a 15-zone zoom-out regenerate 1M+ points and take ~1.9s in one measured
-  // repro — see regenerateLayerShapes for the shared budget that fixes that.
-  const maxSamples = maxSamplesOverride || 150000;
+  // repro — see regenerateLayerShapes for the shared budget that fixes that. Lowered
+  // from 150000 alongside LAYER_FILL_BUDGET/PAN_FILL_BUDGET to cut total stored
+  // point count significantly — see LAYER_FILL_BUDGET's comment for why this
+  // doesn't change how full/bright a fill looks, just how many raw samples it
+  // takes to represent it.
+  const maxSamples = maxSamplesOverride || 50000;
   // Estimate the total candidate count up front and coarsen the grid to fit the
   // budget if needed, rather than raster-scanning at the "ideal" density and
   // bailing out via break once maxSamples is hit — that used to leave whichever
@@ -3677,19 +3722,28 @@ function regeneratePolygon(layer, rec) {
 }
 
 // Total raw-candidate budget shared across every polygon regenerateLayerShapes
-// refills in ONE pass, not a per-polygon allowance. fillPolygonWithHeat's own
-// 150000 cap is fine for any single shape filling on its own, but a zoom step
-// over a country-scale import can bring DOZENS of gradient zones into view at
-// once — each independently claiming up to 150000 raw candidates measured
-// directly at ~1.9 seconds and 1M+ points for just 15 simultaneously-visible
-// zones, which is exactly the "still lags a lot when zooming" this fixes.
-// Dividing one shared budget across however many zones actually need refilling
-// keeps total regeneration cost roughly bounded regardless of how many shapes
-// happen to be on screen at once — each one just gets proportionally sparser.
-const LAYER_FILL_BUDGET = 120000;
+// refills in ONE pass, not a per-polygon allowance — a zoom step over a
+// country-scale import can bring DOZENS of gradient zones into view at once, and
+// letting each independently claim a big allowance was measured directly at
+// ~1.9 seconds and 1M+ points for just 15 simultaneously-visible zones. Lowered
+// further (120000 -> 40000) on top of that existing fix, at the user's request to
+// cut total point count significantly across the board — fewer stored points
+// means less work for every single thing that touches layer.points: redraws,
+// zoom/pan regeneration, and the erase/adjust/correct brush scans alike. The
+// coarsening + normFactor-capping in fillPolygonWithHeat (see its own comments)
+// already compensates the per-point weight for whatever density this budget
+// actually lands on, so a smaller budget reads as "less densely sampled, still
+// the same overall brightness" rather than "dimmer" — the one visible cost is a
+// fill needing to zoom in further before individual sample points might start
+// being perceptible, same tradeoff as before, just tuned further in that
+// direction. Dividing one shared budget across however many zones actually need
+// refilling keeps total regeneration cost roughly bounded regardless of how many
+// shapes happen to be on screen at once — each one just gets proportionally
+// sparser.
+const LAYER_FILL_BUDGET = 40000;
 
 // revealPannedPolygonArea (below) used to call appendPolygonPoints with no budget
-// override at all, falling through to fillPolygonWithHeat's bare 150000-per-shape
+// override at all, falling through to fillPolygonWithHeat's bare per-shape
 // default — heavier than even a full zoom-triggered layer regeneration's shared
 // LAYER_FILL_BUDGET. Measured directly: a single large polygon's pan reveal was
 // regenerating 80k+ points and handing all of them to leaflet-heat's full
@@ -3698,7 +3752,7 @@ const LAYER_FILL_BUDGET = 120000;
 // restores full density with a normal regenerateLayerShapes pass once panning
 // actually stops, so the fill still ends up exactly as dense/correct as before —
 // just not recomputed at full density on every single intermediate drag.
-const PAN_FILL_BUDGET = 20000;
+const PAN_FILL_BUDGET = 8000;
 const PAN_FILL_SETTLE_MS = 350;
 
 function regenerateLayerShapes(layer) {
@@ -3719,7 +3773,7 @@ function regenerateLayerShapes(layer) {
   // actually attempt to fill this time, so the shared budget isn't wasted on
   // shares for off-screen ones that'll just return 0 anyway.
   const visiblePolygons = layer.polygons.filter(p => viewportClippedBounds(L.latLngBounds(p.vertices.map(v => L.latLng(v[0], v[1])))));
-  const perShapeBudget = visiblePolygons.length ? Math.max(2000, Math.floor(LAYER_FILL_BUDGET / visiblePolygons.length)) : 150000;
+  const perShapeBudget = visiblePolygons.length ? Math.max(2000, Math.floor(LAYER_FILL_BUDGET / visiblePolygons.length)) : 50000;
   layer.polygons.forEach(p => appendPolygonPoints(layer, p, perShapeBudget));
   refreshHeatLayer(layer);
 }
@@ -3877,8 +3931,26 @@ map.on('mousedown', (e) => {
   }
   applyBrush(e.latlng);
 });
+// Every brush mode's per-tick work is genuinely expensive at realistic layer sizes
+// — erase/adjust/correct each scan the WHOLE layer.points array (filter/forEach)
+// every single call, and paint re-resamples the entire in-progress stroke path
+// (see applyBrush) — none of it throttled. A fast mouse drag fires native
+// 'mousemove' far faster than the browser can actually paint a frame (measured:
+// 100+ events/sec is routine), so without coalescing, EVERY one of those events
+// was doing a full expensive pass — the direct cause of "5 FPS while editing" on
+// any layer with a non-trivial point count. Collapsing to at most one applyBrush
+// call per animation frame (always using the freshest pointer position, never a
+// stale one) caps the work to what the display can actually show, which is the
+// only ceiling that matters — nothing between two frames is ever visible anyway.
 map.on('mousemove', (e) => {
-  if (isDrawing) { applyBrush(e.latlng); return; }
+  if (!isDrawing) return;
+  pendingBrushLatLng = e.latlng;
+  if (brushRafPending) return;
+  brushRafPending = true;
+  requestAnimationFrame(() => {
+    brushRafPending = false;
+    if (isDrawing && pendingBrushLatLng) applyBrush(pendingBrushLatLng);
+  });
 });
 function finishAdjustStroke() {
   if (!adjustAffectedLayer) return;
@@ -3906,8 +3978,18 @@ function finishCorrectionStroke() {
   correctAffectedLayer = null;
   correctAffectedShapeIds = new Set();
 }
-map.on('mouseup', () => { isDrawing = false; lastPaintPoint = null; finishCurrentStroke(); finishAdjustStroke(); finishCorrectionStroke(); });
-document.addEventListener('mouseup', () => { isDrawing = false; lastPaintPoint = null; finishCurrentStroke(); finishAdjustStroke(); finishCorrectionStroke(); });
+// A fast click-drag-release can end with a mousemove's rAF-coalesced applyBrush
+// call still pending (see the mousemove handler above) when mouseup fires —
+// mouseup is a discrete synchronous event, so it can easily land before that
+// queued animation frame runs. Applying it here first means the very last
+// pointer position always makes it into the stroke instead of being silently
+// dropped by whichever handler happens to run first.
+function flushPendingBrush() {
+  if (brushRafPending && pendingBrushLatLng) applyBrush(pendingBrushLatLng);
+  brushRafPending = false;
+}
+map.on('mouseup', () => { flushPendingBrush(); isDrawing = false; lastPaintPoint = null; finishCurrentStroke(); finishAdjustStroke(); finishCorrectionStroke(); });
+document.addEventListener('mouseup', () => { flushPendingBrush(); isDrawing = false; lastPaintPoint = null; finishCurrentStroke(); finishAdjustStroke(); finishCorrectionStroke(); });
 
 function finishCurrentStroke() {
   if (!currentStroke) return;
@@ -3943,6 +4025,27 @@ map.on('click', (e) => {
 map.on('dblclick', (e) => {
   if (mode === 'polygon' || mode === 'gradient') finishPolygon();
 });
+
+// A conservative lat/lng bounding box guaranteed to contain everything within
+// radiusPx screen pixels of latlng (and then some — it's a plain box around a
+// circle, plus a safety margin for the equirectangular approximation) — cheap
+// enough to check with plain number comparisons per point, unlike the exact
+// pixel-distance test (map.latLngToContainerPoint + distanceTo), which is a real,
+// measured cost when repeated per point across a large layer. Used to reject the
+// vast majority of a layer's points before ever calling the expensive exact
+// check — erase/adjust/correct were each measured at 30-55ms per tick on a
+// 100k-point layer from that expensive check alone, run unconditionally on every
+// single point regardless of how far away it obviously was.
+function nearbyLatLngBox(latlng, radiusPx) {
+  const radiusMeters = radiusPx * metersPerPixel(latlng.lat, map.getZoom()) * 1.4;
+  const latDelta = radiusMeters / 111320;
+  const cosLat = Math.cos(latlng.lat * Math.PI / 180) || 1e-6;
+  const lngDelta = radiusMeters / (111320 * Math.abs(cosLat));
+  return {
+    minLat: latlng.lat - latDelta, maxLat: latlng.lat + latDelta,
+    minLng: latlng.lng - lngDelta, maxLng: latlng.lng + lngDelta
+  };
+}
 
 function applyBrush(latlng) {
   const layer = getActiveLayer();
@@ -4011,6 +4114,7 @@ function applyBrush(latlng) {
   } else if (mode === 'erase') {
     const radiusPx = +brushRadius.value; // matches the on-screen brush cursor exactly
     const clickPoint = map.latLngToContainerPoint(latlng);
+    const near = nearbyLatLngBox(latlng, radiusPx);
     const before = layer.points.length;
     // Track which shapes actually lost points here so an erase mark can be recorded
     // against each of them — otherwise a later zoom-triggered regeneration would
@@ -4018,6 +4122,10 @@ function applyBrush(latlng) {
     // reappear.
     const affectedShapeIds = new Set();
     filterLayerPoints(layer, (p, i) => {
+      // Cheap plain-number comparison first — the exact but expensive projection
+      // (latLngToContainerPoint, called per point) only runs for points that could
+      // plausibly be within the brush at all. See nearbyLatLngBox.
+      if (p[0] < near.minLat || p[0] > near.maxLat || p[1] < near.minLng || p[1] > near.maxLng) return true;
       const hit = map.latLngToContainerPoint([p[0], p[1]]).distanceTo(clickPoint) <= radiusPx;
       if (hit && layer.pointOwners[i] != null) affectedShapeIds.add(layer.pointOwners[i]);
       return !hit;
@@ -4043,18 +4151,36 @@ function applyBrush(latlng) {
     // gradient/fixed value.
     const radiusPx = +brushRadius.value;
     const clickPoint = map.latLngToContainerPoint(latlng);
+    const near = nearbyLatLngBox(latlng, radiusPx);
     const desiredIntensity = getFixedIntensity();
     const affectedShapeIds = new Set();
+    // ownerCounts used to be recomputed via layer.pointOwners.filter(...) — an O(n)
+    // scan of its own — for EVERY matched point that had an owner, not once. A brush
+    // typically only ever touches a small handful of distinct shapes, so counting
+    // every owner in one single pass up front and looking values up from it after
+    // turns "up to (matched points) × O(n)" into "1 × O(n) + O(1) lookups".
+    let ownerCounts = null;
+    function getOwnerCount(ownerId) {
+      if (!ownerCounts) {
+        ownerCounts = new Map();
+        for (let j = 0; j < layer.pointOwners.length; j++) {
+          const id = layer.pointOwners[j];
+          if (id != null) ownerCounts.set(id, (ownerCounts.get(id) || 0) + 1);
+        }
+      }
+      return ownerCounts.get(ownerId) || 0;
+    }
     let changed = false;
     layer.points.forEach((p, i) => {
+      if (p[0] < near.minLat || p[0] > near.maxLat || p[1] < near.minLng || p[1] > near.maxLng) return;
       if (map.latLngToContainerPoint([p[0], p[1]]).distanceTo(clickPoint) > radiusPx) return;
       const ownerId = layer.pointOwners[i];
       let normFactor = 1;
       if (ownerId != null) {
         const strokeRec = layer.strokes.find(s => s.id === ownerId);
         const polyRec = layer.polygons.find(pp => pp.id === ownerId);
-        if (strokeRec) normFactor = Math.min(binNormalizationFactor(strokeRec.spacingFraction, 1), Math.max(1, layer.pointOwners.filter(o => o === ownerId).length));
-        else if (polyRec) normFactor = Math.min(binNormalizationFactor(polyRec.fillFraction, 2) * zoomOverlapCorrection(layer), Math.max(1, layer.pointOwners.filter(o => o === ownerId).length));
+        if (strokeRec) normFactor = Math.min(binNormalizationFactor(strokeRec.spacingFraction, 1), Math.max(1, getOwnerCount(ownerId)));
+        else if (polyRec) normFactor = Math.min(binNormalizationFactor(polyRec.fillFraction, 2) * zoomOverlapCorrection(layer), Math.max(1, getOwnerCount(ownerId)));
         affectedShapeIds.add(ownerId);
       }
       p[2] = applyHeatGamma(desiredIntensity) / normFactor;
@@ -4085,10 +4211,12 @@ function applyBrush(latlng) {
     // approximation.
     const radiusPx = +brushRadius.value;
     const clickPoint = map.latLngToContainerPoint(latlng);
+    const near = nearbyLatLngBox(latlng, radiusPx);
     const boostAmount = (+brushBoost.value) / 100;
     const affectedShapeIds = new Set();
     let changed = false;
     layer.points.forEach((p, i) => {
+      if (p[0] < near.minLat || p[0] > near.maxLat || p[1] < near.minLng || p[1] > near.maxLng) return;
       const distPx = map.latLngToContainerPoint([p[0], p[1]]).distanceTo(clickPoint);
       if (distPx > radiusPx) return;
       const t = distPx / radiusPx;
@@ -4172,62 +4300,79 @@ document.getElementById('btnExportForViewer').addEventListener('click', () => {
   downloadJson(buildExportData(), 'heatmap-data.json');
 });
 
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('File read failed'));
+    reader.readAsText(file);
+  });
+}
+
+// Reconstructs and adds the layers described by one parsed native-JSON export
+// into the current `layers` array — pulled out of the change handler below so
+// importing several files in one go can call this once per file without
+// re-wiping what the previous file in the same batch just added.
+function importNativeLayers(data) {
+  (data.layers || []).forEach(ld => {
+    const layer = makeLayer(ld.name);
+    layer.criteria = ld.criteria || '';
+    layer.visible = ld.visible !== false;
+    layer.points = ld.points || [];
+    layer.pointOwners = ld.pointOwners || layer.points.map(() => null);
+    layer.radius = ld.radius || 25;
+    layer.blur = ld.blur || 18;
+    layer.maxIntensity = ld.maxIntensity || 1.0;
+    layer.gradient = ld.gradient || JSON.parse(JSON.stringify(DEFAULT_GRADIENT));
+    layer.paletteName = ld.paletteName || null;
+    layer.referenceZoom = typeof ld.referenceZoom === 'number' ? ld.referenceZoom : map.getZoom();
+    layer.strokes = (ld.strokes || []).map(sd => {
+      polygonIdCounter = Math.max(polygonIdCounter, sd.id + 1);
+      return { id: sd.id, path: sd.path, intensity: sd.intensity, spacingFraction: sd.spacingFraction, eraseMarks: sd.eraseMarks || [], intensityOverrides: sd.intensityOverrides || [], boostMarks: sd.boostMarks || [] };
+    });
+    layer.polygons = (ld.polygons || []).map(pd => {
+      const record = {
+        id: pd.id, vertices: pd.vertices, fillFraction: pd.fillFraction, isGradient: !!pd.isGradient,
+        gradientAxes: pd.isGradient ? migrateGradientAxes(pd) : undefined,
+        intensity: pd.intensity,
+        eraseMarks: pd.eraseMarks || [],
+        intensityOverrides: pd.intensityOverrides || [],
+        boostMarks: pd.boostMarks || [],
+        outline: null
+      };
+      record.outline = createPolygonOutline(layer, record);
+      polygonIdCounter = Math.max(polygonIdCounter, pd.id + 1);
+      return record;
+    });
+    refreshHeatLayer(layer);
+    if (!layer.visible) map.removeLayer(layer.heatLayer);
+  });
+}
+
 document.getElementById('btnImport').addEventListener('click', () => document.getElementById('fileImport').click());
-document.getElementById('fileImport').addEventListener('change', (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
+document.getElementById('fileImport').addEventListener('change', async (e) => {
+  const files = Array.from(e.target.files || []);
+  if (!files.length) return;
+  pushUndoSnapshot();
+  layers.forEach(l => { if (l.heatLayer) map.removeLayer(l.heatLayer); });
+  layers = [];
+  const failures = [];
+  for (const file of files) {
     try {
-      const data = JSON.parse(reader.result);
-      pushUndoSnapshot();
-      layers.forEach(l => { if (l.heatLayer) map.removeLayer(l.heatLayer); });
-      layers = [];
-      (data.layers || []).forEach(ld => {
-        const layer = makeLayer(ld.name);
-        layer.criteria = ld.criteria || '';
-        layer.visible = ld.visible !== false;
-        layer.points = ld.points || [];
-        layer.pointOwners = ld.pointOwners || layer.points.map(() => null);
-        layer.radius = ld.radius || 25;
-        layer.blur = ld.blur || 18;
-        layer.maxIntensity = ld.maxIntensity || 1.0;
-        layer.gradient = ld.gradient || JSON.parse(JSON.stringify(DEFAULT_GRADIENT));
-        layer.paletteName = ld.paletteName || null;
-        layer.referenceZoom = typeof ld.referenceZoom === 'number' ? ld.referenceZoom : map.getZoom();
-        layer.strokes = (ld.strokes || []).map(sd => {
-          polygonIdCounter = Math.max(polygonIdCounter, sd.id + 1);
-          return { id: sd.id, path: sd.path, intensity: sd.intensity, spacingFraction: sd.spacingFraction, eraseMarks: sd.eraseMarks || [], intensityOverrides: sd.intensityOverrides || [], boostMarks: sd.boostMarks || [] };
-        });
-        layer.polygons = (ld.polygons || []).map(pd => {
-          const record = {
-            id: pd.id, vertices: pd.vertices, fillFraction: pd.fillFraction, isGradient: !!pd.isGradient,
-            gradientAxes: pd.isGradient ? migrateGradientAxes(pd) : undefined,
-            intensity: pd.intensity,
-            eraseMarks: pd.eraseMarks || [],
-            intensityOverrides: pd.intensityOverrides || [],
-            boostMarks: pd.boostMarks || [],
-            outline: null
-          };
-          record.outline = createPolygonOutline(layer, record);
-          polygonIdCounter = Math.max(polygonIdCounter, pd.id + 1);
-          return record;
-        });
-        refreshHeatLayer(layer);
-        if (!layer.visible) map.removeLayer(layer.heatLayer);
-      });
-      // calibrateGradientExposure, not autoExposeLayer — a layer exported before
-      // ever being calibrated (see finishCurrentStroke et al.) carries its
-      // uncalibrated maxIntensity straight through the round-trip otherwise, so
-      // re-importing it would reproduce the exact same near-invisible render.
-      layers.forEach(calibrateGradientExposure);
-      renderLayerList();
+      const data = JSON.parse(await readFileAsText(file));
+      importNativeLayers(data);
     } catch (err) {
-      alert('Invalid JSON file: ' + err.message);
+      failures.push(`${file.name}: ${err.message}`);
     }
-    e.target.value = '';
-  };
-  reader.readAsText(file);
+  }
+  // calibrateGradientExposure, not autoExposeLayer — a layer exported before
+  // ever being calibrated (see finishCurrentStroke et al.) carries its
+  // uncalibrated maxIntensity straight through the round-trip otherwise, so
+  // re-importing it would reproduce the exact same near-invisible render.
+  layers.forEach(calibrateGradientExposure);
+  renderLayerList();
+  if (failures.length) alert('Some files failed to import:\n' + failures.join('\n'));
+  e.target.value = '';
 });
 
 /* ---------------- GeoJSON export / import ---------------- */
@@ -4285,21 +4430,21 @@ document.getElementById('btnExportGeoJSON').addEventListener('click', () => {
 });
 
 document.getElementById('btnImportGeoJSON').addEventListener('click', () => document.getElementById('fileImportGeoJSON').click());
-document.getElementById('fileImportGeoJSON').addEventListener('change', (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
+document.getElementById('fileImportGeoJSON').addEventListener('change', async (e) => {
+  const files = Array.from(e.target.files || []);
+  if (!files.length) return;
+  pushUndoSnapshot();
+  const failures = [];
+  for (const file of files) {
     try {
-      const geo = JSON.parse(reader.result);
-      pushUndoSnapshot();
+      const geo = JSON.parse(await readFileAsText(file));
       importGeoJSON(geo);
     } catch (err) {
-      alert('Invalid GeoJSON file: ' + err.message);
+      failures.push(`${file.name}: ${err.message}`);
     }
-    e.target.value = '';
-  };
-  reader.readAsText(file);
+  }
+  if (failures.length) alert('Some files failed to import:\n' + failures.join('\n'));
+  e.target.value = '';
 });
 
 function escapeXml(s) {
