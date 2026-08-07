@@ -2159,6 +2159,8 @@ let lastPaintPoint = null;
 let currentStroke = null; // {id, path, intensity, spacingFraction, eraseMarks, intensityOverrides} while actively dragging a paint stroke
 let brushRafPending = false;
 let pendingBrushLatLng = null;
+let snapRafPending = false;
+let pendingSnapLatLng = null;
 let adjustAffectedLayer = null; // layer touched by the current Adjust drag, so mouseup can auto-expose it once
 let correctAffectedLayer = null; // layer touched by the current Correct drag
 let correctAffectedShapeIds = new Set(); // shapes touched, so mouseup can regenerate them from their canonical (raw*boost, gamma'd) values — the live drag only applies an approximate direct multiply for immediate feedback
@@ -2316,6 +2318,7 @@ function closestPointOnSegment(p, a, b) {
 
 function findSnapPoint(latlng) {
   const clickPt = map.latLngToContainerPoint(latlng);
+  const box = nearbyLatLngBox(latlng, SNAP_THRESHOLD_PX);
   let closestLatLng = null, closestDist = SNAP_THRESHOLD_PX;
 
   function considerVertex(vLatLng) {
@@ -2335,7 +2338,23 @@ function findSnapPoint(latlng) {
   }
 
   layers.forEach(layer => {
-    layer.polygons.forEach(rec => considerRing(rec.vertices.map(v => L.latLng(v[0], v[1]))));
+    layer.polygons.forEach(rec => {
+      // Cheap numeric bbox check against the raw [lat,lng] vertex data, before
+      // paying for any L.latLng allocation or map projection — a project with
+      // many/large imported polygons has most shapes nowhere near the cursor,
+      // and this skips them all for the cost of one plain array scan each.
+      const verts = rec.vertices;
+      let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+      for (let i = 0; i < verts.length; i++) {
+        const lat = verts[i][0], lng = verts[i][1];
+        if (lat < minLat) minLat = lat;
+        if (lat > maxLat) maxLat = lat;
+        if (lng < minLng) minLng = lng;
+        if (lng > maxLng) maxLng = lng;
+      }
+      if (maxLat < box.minLat || minLat > box.maxLat || maxLng < box.minLng || minLng > box.maxLng) return;
+      considerRing(verts.map(v => L.latLng(v[0], v[1])));
+    });
   });
   // Also snap to the vertices already placed in the polygon currently being drawn —
   // handy for closing a shape exactly back onto its own starting point.
@@ -4253,7 +4272,17 @@ mapContainer.addEventListener('mousemove', (e) => {
   if (mode === 'pan' || mode === 'polygon' || mode === 'gradient' || mode === 'gradient-axis') {
     brushCursor.style.display = 'none';
     if ((mode === 'polygon' || mode === 'gradient') && map.mouseEventToLatLng) {
-      updateSnapIndicator(map.mouseEventToLatLng(e));
+      // Coalesced to at most once per animation frame — same pattern as the
+      // brush's mousemove handler below, since this raw DOM listener otherwise
+      // fires 100+ times/sec and findSnapPoint isn't free (see its own comment).
+      pendingSnapLatLng = map.mouseEventToLatLng(e);
+      if (!snapRafPending) {
+        snapRafPending = true;
+        requestAnimationFrame(() => {
+          snapRafPending = false;
+          if (pendingSnapLatLng) updateSnapIndicator(pendingSnapLatLng);
+        });
+      }
     } else {
       snapIndicator.style.display = 'none';
     }
@@ -4538,6 +4567,19 @@ function applyBrush(latlng) {
       }
       return ownerCounts.get(ownerId) || 0;
     }
+    // Same idea as ownerCounts just above: layer.strokes.find()/layer.polygons.find()
+    // are each an O(shapeCount) linear scan, and this used to run twice per matched
+    // point (not deduplicated by owner) every tick. One id->record map built lazily
+    // on first use turns that into O(shapeCount) once + O(1) lookups thereafter.
+    let shapeById = null;
+    function getShapeRecord(ownerId) {
+      if (!shapeById) {
+        shapeById = new Map();
+        layer.strokes.forEach(s => shapeById.set(s.id, { kind: 'stroke', rec: s }));
+        layer.polygons.forEach(pp => shapeById.set(pp.id, { kind: 'polygon', rec: pp }));
+      }
+      return shapeById.get(ownerId);
+    }
     let changed = false;
     layer.points.forEach((p, i) => {
       if (p[0] < near.minLat || p[0] > near.maxLat || p[1] < near.minLng || p[1] > near.maxLng) return;
@@ -4545,10 +4587,9 @@ function applyBrush(latlng) {
       const ownerId = layer.pointOwners[i];
       let normFactor = 1;
       if (ownerId != null) {
-        const strokeRec = layer.strokes.find(s => s.id === ownerId);
-        const polyRec = layer.polygons.find(pp => pp.id === ownerId);
-        if (strokeRec) normFactor = Math.min(binNormalizationFactor(strokeRec.spacingFraction, 1), Math.max(1, getOwnerCount(ownerId)));
-        else if (polyRec) normFactor = Math.min(binNormalizationFactor(polyRec.fillFraction, 2) * zoomOverlapCorrection(layer), Math.max(1, getOwnerCount(ownerId)));
+        const shape = getShapeRecord(ownerId);
+        if (shape && shape.kind === 'stroke') normFactor = Math.min(binNormalizationFactor(shape.rec.spacingFraction, 1), Math.max(1, getOwnerCount(ownerId)));
+        else if (shape && shape.kind === 'polygon') normFactor = Math.min(binNormalizationFactor(shape.rec.fillFraction, 2) * zoomOverlapCorrection(layer), Math.max(1, getOwnerCount(ownerId)));
         affectedShapeIds.add(ownerId);
       }
       p[2] = applyHeatGamma(desiredIntensity) / normFactor;
@@ -4557,10 +4598,8 @@ function applyBrush(latlng) {
     if (changed) {
       const radiusMeters = radiusPx * metersPerPixel(latlng.lat, map.getZoom());
       affectedShapeIds.forEach(id => {
-        const strokeRec = layer.strokes.find(s => s.id === id);
-        if (strokeRec) strokeRec.intensityOverrides.push({ lat: latlng.lat, lng: latlng.lng, radiusMeters, intensity: desiredIntensity });
-        const polyRec = layer.polygons.find(pp => pp.id === id);
-        if (polyRec) polyRec.intensityOverrides.push({ lat: latlng.lat, lng: latlng.lng, radiusMeters, intensity: desiredIntensity });
+        const shape = getShapeRecord(id);
+        if (shape) shape.rec.intensityOverrides.push({ lat: latlng.lat, lng: latlng.lng, radiusMeters, intensity: desiredIntensity });
       });
       refreshHeatLayer(layer);
       adjustAffectedLayer = layer;
