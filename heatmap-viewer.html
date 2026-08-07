@@ -40,11 +40,20 @@
   #map{flex:1;height:100%;background:var(--bg);}
   #sidebar{
     width:300px;min-width:300px;background:var(--panel);border-left:1px solid var(--border);
-    display:flex;flex-direction:column;overflow:hidden;
+    display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;
   }
   .sidebar-header{padding:16px 18px 12px;border-bottom:1px solid var(--border);}
   .sidebar-header h1{font-size:14.5px;margin:0 0 2px;font-weight:700;letter-spacing:.01em;}
   .sidebar-header p{font-size:11px;color:var(--sub);margin:0;}
+  .credit-block{
+    display:flex;flex-direction:column;gap:6px;align-items:flex-end;
+    padding:12px 14px;margin-top:auto;border-top:1px solid var(--border);
+  }
+  .credit-block a{
+    display:inline-flex;align-items:center;gap:5px;color:var(--sub);font-size:11px;
+    text-decoration:none;transition:color .12s;
+  }
+  .credit-block a:hover{color:var(--accent);}
   .view-only-badge{
     display:inline-flex;align-items:center;gap:4px;margin-top:8px;padding:2px 9px;border-radius:10px;
     background:var(--accent-soft);color:#7d97e0;border:1px solid var(--accent);font-size:10.5px;font-weight:600;
@@ -61,7 +70,7 @@
   button.active-toggle:hover{background:var(--accent-hover);border-color:var(--accent-hover);}
   button.small{padding:5px 8px;font-size:11px;}
   .toolbar{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:6px;}
-  #layerList{flex:1;overflow-y:auto;padding:8px;}
+  #layerList{padding:8px;}
   .layer-card{
     background:var(--panel2);border:1px solid var(--border);border-radius:var(--radius);
     margin-bottom:8px;padding:11px;transition:.12s;cursor:pointer;
@@ -125,6 +134,15 @@
   .overlay-row .swatch{width:12px;height:12px;border-radius:3px;flex-shrink:0;}
   .overlay-row label{flex:1;cursor:pointer;}
   .overlay-row input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px;cursor:pointer;}
+  .overlay-sub{padding-left:18px;margin-bottom:8px;}
+  .overlay-sub-row{display:flex;gap:6px;margin-bottom:4px;}
+  .overlay-sub select, .overlay-sub input[type=text]{
+    background:var(--panel3);color:var(--text);border:1px solid var(--border);
+    border-radius:4px;font-size:11px;padding:4px 6px;font-family:inherit;width:100%;
+  }
+  .overlay-sub select{flex:1;width:auto;cursor:pointer;}
+  .overlay-sub input[type=text]{margin-bottom:4px;}
+  .overlay-status{font-size:10.5px;color:var(--sub);}
 
   /* ---- Floating search box (top-center over map) ---- */
   #searchBox{
@@ -231,8 +249,58 @@
         <label for="chkFortWire">Barbed wire</label>
       </div>
       <div id="fortLoadingHint" style="font-size:10.5px;color:var(--sub);display:none;">Loading…</div>
+
+      <div class="overlay-row" style="margin-top:10px;">
+        <input type="checkbox" id="chkTerrain">
+        <label for="chkTerrain"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2.5px;margin-right:3px;"><path d="M3 20l6-11 4 6 3-4 5 9H3z"/></svg>Terrain analysis</label>
+      </div>
+      <div class="overlay-sub" id="terrainOpts" style="display:none;">
+        <div class="overlay-sub-row">
+          <select id="terrainMode">
+            <option value="color">Color (hypsometric)</option>
+            <option value="bw">Black &amp; white</option>
+            <option value="black-transparent">Black, transparent</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="overlay-row">
+        <input type="checkbox" id="chkFirms">
+        <label for="chkFirms"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2.5px;margin-right:3px;"><path d="M12 21c3.8 0 6.2-2.5 6.2-6 0-3.8-3-5.8-4-9.3-.9 1.8-1 3.6-2.6 3.6-.9 0-1-1.6-1-1.6-2 2-3.6 4.6-3.6 7.3 0 3.5 2.2 6 5 6z"/></svg>FIRMS fire detections</label>
+      </div>
+      <div class="overlay-sub" id="firmsOpts" style="display:none;">
+        <input type="text" id="firmsKey" placeholder="NASA FIRMS MAP_KEY">
+        <div class="overlay-sub-row">
+          <select id="firmsSource">
+            <option value="ALL_VIIRS">All VIIRS</option>
+            <option value="VIIRS_NOAA20_NRT">VIIRS NOAA-20</option>
+            <option value="VIIRS_SNPP_NRT">VIIRS SNPP</option>
+            <option value="VIIRS_NOAA21_NRT">VIIRS NOAA-21</option>
+            <option value="MODIS_NRT">MODIS</option>
+          </select>
+          <select id="firmsDays" style="flex:0 0 70px;">
+            <option value="1">1 day</option>
+            <option value="2" selected>2 days</option>
+            <option value="3">3 days</option>
+            <option value="5">5 days</option>
+            <option value="7">7 days</option>
+            <option value="10">10 days</option>
+          </select>
+        </div>
+        <div class="overlay-status" id="firmsStatus" style="display:none;"></div>
+      </div>
     </div>
     <div id="layerList"></div>
+    <div class="credit-block">
+      <a href="https://x.com/Playfra0" target="_blank" rel="noopener">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18.9 2H22l-7.6 8.7L23 22h-7l-5.5-6.9L4.2 22H1l8.1-9.3L1 2h7.2l5 6.3L18.9 2zm-1.2 18h1.7L6.4 4H4.6l13.1 16z"/></svg>
+        @Playfra0
+      </a>
+      <a href="https://t.me/PlayfraOSINT" target="_blank" rel="noopener">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M21.9 4.3 18.7 20c-.2 1-.9 1.3-1.7.8l-4.7-3.5-2.3 2.2c-.3.3-.5.5-1 .5l.3-4.9 8.9-8c.4-.4-.1-.6-.6-.2L6.6 13 1.9 11.5c-1-.3-1-1 .2-1.5L20.6 3c.8-.3 1.6.2 1.3 1.3z"/></svg>
+        t.me/PlayfraOSINT
+      </a>
+    </div>
   </div>
 </div>
 
@@ -569,6 +637,325 @@ function updateLegend() {
   container.querySelector('.legend-bar').style.background = gradientCss(layer.gradient);
 }
 
+/* ---------------- Terrain analysis overlay ----------------
+   Elevation hillshade/hypsometric tint built from AWS's free public Terrarium
+   PNG elevation tiles (no API key). Each tile's RGB encodes elevation in
+   meters (elev = R*256 + G + B/256 - 32768); we decode that once per tile,
+   cache it on the tile element, and recolor into the chosen palette (color
+   hypsometric / grayscale / black-fading-to-transparent). Recoloring is cheap
+   (no re-fetch) so switching modes or rescaling the color range on pan/zoom
+   just repaints already-decoded tiles. Ported from a reference site's terrain
+   analysis feature (see credit block) — same tile source, decode formula, and
+   hypsometric color stops. */
+const ELEV_STOPS = [
+  [-5,  70, 170, 210],
+  [0,   80, 200, 130],
+  [20,  120, 210, 100],
+  [50,  170, 220, 80],
+  [90,  210, 220, 70],
+  [130, 240, 210, 80],
+  [170, 245, 185, 120],
+  [220, 245, 160, 155],
+  [270, 240, 155, 170],
+  [320, 245, 180, 190],
+  [360, 255, 225, 220]
+];
+
+function elevColor(e, min, max, mode) {
+  const t01 = max > min ? Math.max(0, Math.min(1, (e - min) / (max - min))) : 0.5;
+  if (mode === 'bw') {
+    const v = Math.round(t01 * 255);
+    return [v, v, v, 255];
+  }
+  if (mode === 'black-transparent') {
+    return [0, 0, 0, Math.round((1 - t01) * 255)];
+  }
+  const stops = ELEV_STOPS;
+  const mapped = stops[0][0] + t01 * (stops[stops.length - 1][0] - stops[0][0]);
+  if (mapped <= stops[0][0]) return [stops[0][1], stops[0][2], stops[0][3], 255];
+  for (let i = 1; i < stops.length; i++) {
+    if (mapped <= stops[i][0]) {
+      const f = (mapped - stops[i - 1][0]) / (stops[i][0] - stops[i - 1][0]);
+      return [
+        Math.round(stops[i - 1][1] + f * (stops[i][1] - stops[i - 1][1])),
+        Math.round(stops[i - 1][2] + f * (stops[i][2] - stops[i - 1][2])),
+        Math.round(stops[i - 1][3] + f * (stops[i][3] - stops[i - 1][3])),
+        255
+      ];
+    }
+  }
+  const last = stops[stops.length - 1];
+  return [last[1], last[2], last[3], 255];
+}
+
+function colorElevTile(tile, min, max, mode) {
+  const elevData = tile._elevData;
+  if (!elevData) return;
+  const w = tile.width, h = tile.height;
+  const ctx = tile.getContext('2d');
+  const imageData = ctx.createImageData(w, h);
+  const d = imageData.data;
+  for (let j = 0, i = 0; j < elevData.length; j++, i += 4) {
+    const [r, g, b, a] = elevColor(elevData[j], min, max, mode);
+    d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = a;
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+
+const TERRAIN_MODE_STORAGE_KEY = 'heatmapViewerTerrainMode_v1';
+let terrainMode = 'color';
+try { terrainMode = localStorage.getItem(TERRAIN_MODE_STORAGE_KEY) || 'color'; } catch (e) {}
+
+let topoTileLayer = null;
+let topoRange = { min: -5, max: 360 };
+let topoRecolorTimer = null;
+
+const HypsometricLayer = L.GridLayer.extend({
+  createTile: function(coords, done) {
+    const tile = document.createElement('canvas');
+    const size = this.getTileSize();
+    tile.width = size.x;
+    tile.height = size.y;
+    const ctx = tile.getContext('2d');
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      ctx.drawImage(img, 0, 0, size.x, size.y);
+      const srcData = ctx.getImageData(0, 0, size.x, size.y).data;
+      const elevData = new Float32Array(size.x * size.y);
+      for (let i = 0, j = 0; i < srcData.length; i += 4, j++) {
+        elevData[j] = (srcData[i] * 256 + srcData[i + 1] + srcData[i + 2] / 256) - 32768;
+      }
+      tile._elevData = elevData;
+      colorElevTile(tile, topoRange.min, topoRange.max, terrainMode);
+      done(null, tile);
+      scheduleTopoRecolor();
+    };
+    img.onerror = () => done(null, tile);
+    img.src = `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${coords.z}/${coords.x}/${coords.y}.png`;
+    return tile;
+  }
+});
+
+function scheduleTopoRecolor() {
+  clearTimeout(topoRecolorTimer);
+  topoRecolorTimer = setTimeout(recolorTopo, 200);
+}
+
+// Rescales the color range to the 2nd-98th percentile of elevations actually
+// visible at the current zoom, so a mostly-flat view gets useful contrast
+// instead of being crushed into one shade by a distant mountain elsewhere in
+// the cached tile set.
+function recolorTopo() {
+  if (!topoTileLayer || !topoTileLayer._tiles) return;
+  const tiles = [];
+  const samples = [];
+  const zoom = map.getZoom();
+  for (const key in topoTileLayer._tiles) {
+    const t = topoTileLayer._tiles[key];
+    if (t.current && t.el._elevData && t.coords && t.coords.z === zoom) {
+      tiles.push(t.el);
+      const ed = t.el._elevData;
+      for (let i = 0; i < ed.length; i += 64) samples.push(ed[i]);
+    }
+  }
+  if (!samples.length) return;
+  samples.sort((a, b) => a - b);
+  const p = (pct) => samples[Math.floor(pct * (samples.length - 1))];
+  const gMin = Math.max(p(0.02), -50);
+  const gMax = Math.min(p(0.98), 600);
+  if (gMax <= gMin) return;
+  topoRange = { min: gMin, max: gMax };
+  tiles.forEach(t => colorElevTile(t, gMin, gMax, terrainMode));
+  updateElevLegend(gMin, gMax);
+}
+
+const ElevLegendControl = L.Control.extend({
+  options: { position: 'bottomright' },
+  onAdd: function() {
+    const container = L.DomUtil.create('div', 'legend-control');
+    container.id = 'elevLegend';
+    L.DomEvent.disableClickPropagation(container);
+    this._container = container;
+    return container;
+  }
+});
+const elevLegendControl = new ElevLegendControl();
+map.addControl(elevLegendControl);
+
+function updateElevLegend(min, max) {
+  const container = elevLegendControl._container;
+  if (!container) return;
+  if (terrainMode === 'black-transparent') { container.style.display = 'none'; return; }
+  const steps = 8;
+  let rows = '<div class="legend-title">Elevation</div>';
+  for (let i = steps; i >= 0; i--) {
+    const elev = min + (i / steps) * (max - min);
+    const [r, g, b, a] = elevColor(elev, min, max, terrainMode);
+    rows += `<div style="display:flex;align-items:center;gap:5px;margin:1px 0;">
+      <span style="width:22px;height:11px;display:inline-block;background:rgb(${r},${g},${b});opacity:${(a / 255).toFixed(2)};border:1px solid var(--border);border-radius:2px;"></span>
+      <span style="font-size:10.5px;color:var(--sub);">${Math.round(elev)} m</span>
+    </div>`;
+  }
+  container.innerHTML = rows;
+  container.style.display = 'block';
+}
+
+function toggleTerrainOverlay(enabled) {
+  if (enabled) {
+    if (!topoTileLayer) {
+      topoTileLayer = new HypsometricLayer({ opacity: 0.85, maxZoom: 15, attribution: 'Elevation: AWS Terrain Tiles' });
+    }
+    topoTileLayer.addTo(map);
+    topoTileLayer.bringToFront();
+    map.on('moveend zoomend', scheduleTopoRecolor);
+    scheduleTopoRecolor();
+  } else {
+    if (topoTileLayer) map.removeLayer(topoTileLayer);
+    map.off('moveend zoomend', scheduleTopoRecolor);
+    clearTimeout(topoRecolorTimer);
+    elevLegendControl._container.style.display = 'none';
+  }
+}
+
+document.getElementById('chkTerrain').addEventListener('change', (e) => {
+  document.getElementById('terrainOpts').style.display = e.target.checked ? 'block' : 'none';
+  toggleTerrainOverlay(e.target.checked);
+});
+const terrainModeSelect = document.getElementById('terrainMode');
+terrainModeSelect.value = terrainMode;
+terrainModeSelect.addEventListener('change', (e) => {
+  terrainMode = e.target.value;
+  try { localStorage.setItem(TERRAIN_MODE_STORAGE_KEY, terrainMode); } catch (err) {}
+  if (topoTileLayer && topoTileLayer._tiles) {
+    Object.values(topoTileLayer._tiles).forEach(t => {
+      if (t.el._elevData) colorElevTile(t.el, topoRange.min, topoRange.max, terrainMode);
+    });
+  }
+  updateElevLegend(topoRange.min, topoRange.max);
+});
+
+/* ---------------- NASA FIRMS fire detections ----------------
+   Fire/thermal-anomaly points over Ukraine (bbox 22,44,41,53) for the last N
+   days. Requires a free FIRMS MAP_KEY (https://firms.modaps.eosdis.nasa.gov/api/) —
+   entered by the user into the text field below and kept only in this
+   browser's localStorage, never hardcoded or sent anywhere but NASA's own API.
+   CSV rows are parsed with a small hand-written splitter (the feed has no
+   quoted/embedded-comma fields) and drawn as canvas-rendered circle markers,
+   colored by fire radiative power. */
+const FIRMS_KEY_STORAGE_KEY = 'heatmapViewerFirmsKey_v1';
+let firmsOverlay = null;
+let firmsRenderer = null;
+const firmsCache = new Map();
+
+function parseCsv(text) {
+  const lines = text.split(/\r?\n/).filter(l => l.length);
+  if (!lines.length) return [];
+  const headers = lines[0].split(',');
+  return lines.slice(1).map(line => {
+    const cells = line.split(',');
+    const row = {};
+    headers.forEach((h, i) => { row[h] = cells[i]; });
+    return row;
+  });
+}
+
+async function toggleFirmsOverlay(enabled) {
+  const statusEl = document.getElementById('firmsStatus');
+  const status = (msg) => {
+    statusEl.style.display = msg ? 'block' : 'none';
+    statusEl.textContent = msg || '';
+  };
+
+  if (!enabled) {
+    if (firmsOverlay) firmsOverlay.clearLayers();
+    status(null);
+    return;
+  }
+
+  const key = document.getElementById('firmsKey').value.trim();
+  if (!key) {
+    status('Enter a FIRMS map key first');
+    document.getElementById('chkFirms').checked = false;
+    document.getElementById('firmsOpts').style.display = 'none';
+    return;
+  }
+  try { localStorage.setItem(FIRMS_KEY_STORAGE_KEY, key); } catch (e) {}
+
+  const selected = document.getElementById('firmsSource').value;
+  const sources = selected === 'ALL_VIIRS'
+    ? ['VIIRS_NOAA20_NRT', 'VIIRS_SNPP_NRT', 'VIIRS_NOAA21_NRT']
+    : [selected];
+  const days = parseInt(document.getElementById('firmsDays').value, 10);
+
+  status('Loading fire detections…');
+
+  const loadSource = async (source) => {
+    const cacheKey = `${key}/${source}/${days}`;
+    const cached = firmsCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < 10 * 60 * 1000) return cached.rows;
+    const url = `https://firms.modaps.eosdis.nasa.gov/api/area/csv/${key}/${source}/22,44,41,53/${days}`;
+    const resp = await fetch(url);
+    const text = await resp.text();
+    if (!resp.ok) throw new Error(text.slice(0, 120) || `HTTP ${resp.status}`);
+    const rows = parseCsv(text);
+    firmsCache.set(cacheKey, { rows, at: Date.now() });
+    return rows;
+  };
+
+  const results = await Promise.allSettled(sources.map(loadSource));
+  const rows = [];
+  let failures = 0;
+  let firstError = null;
+  results.forEach(res => {
+    if (res.status === 'fulfilled') rows.push(...res.value);
+    else { failures++; if (!firstError) firstError = res.reason; }
+  });
+
+  if (failures === sources.length) {
+    status(firstError instanceof TypeError ? 'FIRMS blocked by CORS — needs a proxy' : `FIRMS error: ${firstError?.message ?? 'unknown'}`);
+    document.getElementById('chkFirms').checked = false;
+    document.getElementById('firmsOpts').style.display = 'none';
+    return;
+  }
+
+  if (!firmsOverlay) {
+    firmsRenderer = L.canvas({ padding: 0.3 });
+    firmsOverlay = L.layerGroup().addTo(map);
+  }
+  firmsOverlay.clearLayers();
+
+  let plotted = 0;
+  rows.forEach(r => {
+    const lat = parseFloat(r.latitude), lng = parseFloat(r.longitude);
+    if (!isFinite(lat) || !isFinite(lng)) return;
+    const frp = parseFloat(r.frp) || 0;
+    const color = frp > 20 ? '#d32f2f' : frp > 5 ? '#f57c00' : '#fbc02d';
+    const time = String(r.acq_time ?? '').padStart(4, '0').replace(/(\d\d)(\d\d)/, '$1:$2');
+    L.circleMarker([lat, lng], {
+      renderer: firmsRenderer, radius: 4, color, weight: 1, fillColor: color, fillOpacity: 0.7
+    }).bindTooltip(`<strong>${r.acq_date} ${time} UTC</strong><br>${r.satellite || ''} | FRP ${frp} MW | conf ${r.confidence}`)
+      .addTo(firmsOverlay);
+    plotted++;
+  });
+  status(`${plotted.toLocaleString()} detections, last ${days} day${days > 1 ? 's' : ''}` + (failures ? ` (${failures} source${failures > 1 ? 's' : ''} failed)` : ''));
+}
+
+document.getElementById('chkFirms').addEventListener('change', (e) => {
+  document.getElementById('firmsOpts').style.display = e.target.checked ? 'block' : 'none';
+  toggleFirmsOverlay(e.target.checked);
+});
+document.getElementById('firmsSource').addEventListener('change', () => {
+  if (document.getElementById('chkFirms').checked) toggleFirmsOverlay(true);
+});
+document.getElementById('firmsDays').addEventListener('change', () => {
+  if (document.getElementById('chkFirms').checked) toggleFirmsOverlay(true);
+});
+try {
+  const savedFirmsKey = localStorage.getItem(FIRMS_KEY_STORAGE_KEY);
+  if (savedFirmsKey) document.getElementById('firmsKey').value = savedFirmsKey;
+} catch (e) {}
+
 /* ---------------- Layer / data model (read-only: no drawing/painting here) ---------------- */
 const DEFAULT_GRADIENT = [
   { pos: 0.2, color: '#0000ff' },
@@ -748,6 +1135,18 @@ function performZoomRegeneration() {
   });
   scheduleZoomExposureRecalibration();
 }
+
+// See the matching comment in heatmap-map.html — a CSS transform animating on top
+// of an active blur filter forces a much more expensive repaint path every frame
+// of Leaflet's zoom transition than either alone. Dropping the filter for the
+// animation's own ~250ms and letting performZoomRegeneration -> applyCanvasBlur
+// restore it once the zoom settles is what actually fixes "fluid with the heatmap
+// off, stutters with it on".
+map.on('zoomstart', () => {
+  layers.forEach(layer => {
+    if (layer.heatLayer && layer.heatLayer._canvas) layer.heatLayer._canvas.style.filter = 'none';
+  });
+});
 
 let zoomRegenTimer = null;
 let zoomRegenCooldownUntil = 0;
