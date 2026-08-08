@@ -1691,7 +1691,7 @@ function filterLayerPoints(layer, predicate) {
 }
 
 function clearLayerPolygons(layer) {
-  layer.polygons.forEach(rec => { if (rec.outline) map.removeLayer(rec.outline); });
+  layer.polygons.forEach(rec => { if (rec.outline) map.removeLayer(rec.outline); if (rec._bakedOverlay) map.removeLayer(rec._bakedOverlay); });
   layer.polygons = [];
   // Strokes must be cleared here too — otherwise a later zoom-triggered regeneration
   // would resample their still-stored paths and the "cleared" points would come back.
@@ -1708,22 +1708,30 @@ const MAX_UNDO = 50;
 function snapshotState() {
   return {
     activeLayerId, layerIdCounter, polygonIdCounter, axisIdCounter,
-    layers: layers.map(l => ({
-      id: l.id, name: l.name, criteria: l.criteria, visible: l.visible,
-      points: JSON.parse(JSON.stringify(l.points)),
-      pointOwners: l.pointOwners.slice(),
-      strokes: JSON.parse(JSON.stringify(l.strokes)),
-      polygons: l.polygons.map(p => ({
-        id: p.id, vertices: p.vertices, fillFraction: p.fillFraction, isGradient: !!p.isGradient,
-        gradientAxes: JSON.parse(JSON.stringify(p.gradientAxes || [])),
-        intensity: p.intensity,
-        eraseMarks: JSON.parse(JSON.stringify(p.eraseMarks || [])),
-        intensityOverrides: JSON.parse(JSON.stringify(p.intensityOverrides || [])),
-        boostMarks: JSON.parse(JSON.stringify(p.boostMarks || []))
-      })),
-      radius: l.radius, blur: l.blur, maxIntensity: l.maxIntensity, referenceZoom: l.referenceZoom,
-      gradient: JSON.parse(JSON.stringify(l.gradient)), paletteName: l.paletteName
-    }))
+    layers: layers.map(l => {
+      // A baked polygon (see bakePolygon) keeps its fill points out of
+      // l.points as a rendering optimization — fullLayerPoints reconstructs
+      // the complete array on demand (from each baked polygon's own cached
+      // points, no recomputation needed) so undo/redo/autosave keep the exact
+      // same "every point is really in here" guarantee they've always had.
+      const full = fullLayerPoints(l);
+      return {
+        id: l.id, name: l.name, criteria: l.criteria, visible: l.visible,
+        points: JSON.parse(JSON.stringify(full.points)),
+        pointOwners: full.pointOwners.slice(),
+        strokes: JSON.parse(JSON.stringify(l.strokes)),
+        polygons: l.polygons.map(p => ({
+          id: p.id, vertices: p.vertices, fillFraction: p.fillFraction, isGradient: !!p.isGradient,
+          gradientAxes: JSON.parse(JSON.stringify(p.gradientAxes || [])),
+          intensity: p.intensity,
+          eraseMarks: JSON.parse(JSON.stringify(p.eraseMarks || [])),
+          intensityOverrides: JSON.parse(JSON.stringify(p.intensityOverrides || [])),
+          boostMarks: JSON.parse(JSON.stringify(p.boostMarks || []))
+        })),
+        radius: l.radius, blur: l.blur, maxIntensity: l.maxIntensity, referenceZoom: l.referenceZoom,
+        gradient: JSON.parse(JSON.stringify(l.gradient)), paletteName: l.paletteName
+      };
+    })
   };
 }
 
@@ -1741,7 +1749,7 @@ function pushUndoSnapshot() {
 function restoreSnapshot(snap) {
   layers.forEach(l => {
     if (l.heatLayer) map.removeLayer(l.heatLayer);
-    l.polygons.forEach(p => { if (p.outline) map.removeLayer(p.outline); });
+    l.polygons.forEach(p => { if (p.outline) map.removeLayer(p.outline); if (p._bakedOverlay) map.removeLayer(p._bakedOverlay); });
   });
   layers = snap.layers.map(sl => {
     const layer = {
@@ -1851,7 +1859,7 @@ function deleteLayer(id) {
   if (!layer) return;
   pushUndoSnapshot();
   if (layer.heatLayer) map.removeLayer(layer.heatLayer);
-  layer.polygons.forEach(rec => { if (rec.outline) map.removeLayer(rec.outline); });
+  layer.polygons.forEach(rec => { if (rec.outline) map.removeLayer(rec.outline); if (rec._bakedOverlay) map.removeLayer(rec._bakedOverlay); });
   layers = layers.filter(l => l.id !== id);
   if (activeLayerId === id) activeLayerId = layers.length ? layers[layers.length-1].id : null;
   renderLayerList();
@@ -1862,8 +1870,8 @@ function toggleLayerVisibility(id) {
   layer.visible = !layer.visible;
   if (layer.visible && heatmapMasterVisible) { layer.heatLayer.addTo(map); applyCanvasBlur(layer); } else { map.removeLayer(layer.heatLayer); }
   layer.polygons.forEach(rec => {
-    if (!rec.outline) return;
-    if (layer.visible) rec.outline.addTo(map); else map.removeLayer(rec.outline);
+    if (rec.outline) { if (layer.visible) rec.outline.addTo(map); else map.removeLayer(rec.outline); }
+    if (rec._bakedOverlay) { if (layer.visible) rec._bakedOverlay.addTo(map); else map.removeLayer(rec._bakedOverlay); }
   });
   // Regeneration is skipped for hidden layers (see regenerateLayerShapes) to avoid
   // wasted work on every zoom while you're not looking at them — catch up now that
@@ -2164,6 +2172,9 @@ let pendingSnapLatLng = null;
 let adjustAffectedLayer = null; // layer touched by the current Adjust drag, so mouseup can auto-expose it once
 let correctAffectedLayer = null; // layer touched by the current Correct drag
 let correctAffectedShapeIds = new Set(); // shapes touched, so mouseup can regenerate them from their canonical (raw*boost, gamma'd) values — the live drag only applies an approximate direct multiply for immediate feedback
+let adjustAffectedShapeIds = new Set(); // polygons touched by the current Adjust drag, so mouseup can re-bake them (see bakePolygon) — Adjust's live edits are already canonical, unlike Correct, so this is baking-only, not a "recompute the real value" step
+let eraseAffectedLayer = null; // layer touched by the current Erase drag, so mouseup can re-bake any polygon it touched
+let eraseAffectedShapeIds = new Set();
 
 const btnPaint = document.getElementById('btnPaint');
 const btnPoint = document.getElementById('btnPoint');
@@ -3092,13 +3103,6 @@ function finishPolygon() {
   const intensity = getFixedIntensity();
   const polygonId = polygonIdCounter++;
   pushUndoSnapshot();
-  const added = fillPolygonWithHeat(layer, polygonVertices, () => intensity, fillFraction, polygonId);
-  if (added === 0) {
-    undoStack.pop(); // nothing actually changed, don't leave a no-op entry in the undo history
-    clearPolygonDrawing();
-    alert('No fill points landed inside that polygon — try a lower "Fill %" value.');
-    return;
-  }
   const record = {
     id: polygonId,
     vertices: polygonVertices.map(v => [v.lat, v.lng]),
@@ -3108,6 +3112,13 @@ function finishPolygon() {
     boostMarks: [],
     outline: null
   };
+  const added = appendPolygonPoints(layer, record);
+  if (added === 0) {
+    undoStack.pop(); // nothing actually changed, don't leave a no-op entry in the undo history
+    clearPolygonDrawing();
+    alert('No fill points landed inside that polygon — try a lower "Fill %" value.');
+    return;
+  }
   record.outline = createPolygonOutline(layer, record);
   layer.polygons.push(record);
   clearPolygonDrawing();
@@ -3149,16 +3160,6 @@ function finalizeNewGradientZone(path) {
   const type = gradientType;
   const polygonId = polygonIdCounter++;
   pushUndoSnapshot();
-  const added = fillPolygonWithHeat(
-    layer, zone.verticesLL,
-    (lat, lng) => gradientIntensityAt(lat, lng, path, iStart, iEnd, type),
-    zone.fillFraction, polygonId
-  );
-  if (added === 0) {
-    undoStack.pop(); // nothing actually changed, don't leave a no-op entry in the undo history
-    alert('No fill points landed inside that zone — try a lower "Fill %" value, then Done again.');
-    return false;
-  }
   const record = {
     id: polygonId,
     vertices: zone.verticesLL.map(v => [v.lat, v.lng]),
@@ -3174,6 +3175,12 @@ function finalizeNewGradientZone(path) {
     boostMarks: [],
     outline: null
   };
+  const added = appendPolygonPoints(layer, record);
+  if (added === 0) {
+    undoStack.pop(); // nothing actually changed, don't leave a no-op entry in the undo history
+    alert('No fill points landed inside that zone — try a lower "Fill %" value, then Done again.');
+    return false;
+  }
   record.outline = createPolygonOutline(layer, record);
   layer.polygons.push(record);
   scheduleGradientExposureCalibration(layer);
@@ -3509,6 +3516,7 @@ function deletePolygonRecord(layer, record) {
   filterLayerPoints(layer, (p, i) => layer.pointOwners[i] !== record.id);
   layer.polygons = layer.polygons.filter(r => r.id !== record.id);
   map.removeLayer(record.outline);
+  if (record._bakedOverlay) map.removeLayer(record._bakedOverlay);
   refreshHeatLayer(layer);
   updateLayerMetaOnly(layer);
 }
@@ -3529,6 +3537,7 @@ function movePolygonToLayer(sourceLayer, record, targetLayer) {
   filterLayerPoints(sourceLayer, (p, i) => sourceLayer.pointOwners[i] !== record.id);
   sourceLayer.polygons = sourceLayer.polygons.filter(r => r.id !== record.id);
   map.removeLayer(record.outline);
+  if (record._bakedOverlay) { map.removeLayer(record._bakedOverlay); record._bakedOverlay = null; record._baked = false; }
   refreshHeatLayer(sourceLayer);
   updateLayerMetaOnly(sourceLayer);
 
@@ -3857,10 +3866,24 @@ function intersectBounds(a, b) {
 // value from 2% to 40% coarsens to the identical point count. Surfacing this lets
 // that control tell the user why, instead of just not responding.
 let lastFillWasCoarsened = false;
+// Set alongside lastFillWasCoarsened on every call — read by bakePolygon (see
+// there) right after calling this, since it needs the actual bounds that got
+// filled (viewport-clipped, or the forced full-extent bounds when baking) to
+// size/position the baked image, and there was nowhere else to get that
+// without changing this function's return type for every existing caller.
+let lastFillClippedBounds = null;
 
-function fillPolygonWithHeat(layer, verts, intensityFn, fillFraction, polygonId, eraseMarks, intensityOverrides, boostMarks, maxSamplesOverride) {
+// outPoints: when given, computed [lat,lng,weight] triples are pushed there
+// instead of layer.points/pointOwners, and refreshHeatLayer is skipped — used
+// by bakePolygon to capture a polygon's fill without touching the shared layer
+// array at all. forceBounds: when given, fills exactly these bounds instead of
+// viewportClippedBounds(verts) — used by bakePolygon to fill a shape's FULL
+// extent regardless of what's currently on screen, since a baked image needs
+// to be complete on its own (see bakePolygon's own comment for why).
+function fillPolygonWithHeat(layer, verts, intensityFn, fillFraction, polygonId, eraseMarks, intensityOverrides, boostMarks, maxSamplesOverride, outPoints, forceBounds) {
   const fullBounds = L.latLngBounds(verts);
-  const clipped = viewportClippedBounds(fullBounds);
+  const clipped = forceBounds || viewportClippedBounds(fullBounds);
+  lastFillClippedBounds = clipped;
   if (!clipped) { lastFillWasCoarsened = false; return 0; } // nothing to fill — this shape is entirely off-screen right now
   const south = clipped.getSouth(), north = clipped.getNorth(), west = clipped.getWest(), east = clipped.getEast();
   const centerLat = (south + north) / 2;
@@ -3962,11 +3985,16 @@ function fillPolygonWithHeat(layer, verts, intensityFn, fillFraction, polygonId,
     const overridden = overrideIntensityAt(jLat, jLng, intensityOverrides);
     const raw = overridden !== null ? overridden : intensityFn(gLat, gLng);
     const boosted = Math.min(1, raw * (1 + boostFactorAt(jLat, jLng, boostMarks)));
-    layer.points.push([jLat, jLng, applyHeatGamma(boosted) / normFactor]);
-    layer.pointOwners.push(polygonId);
+    const weight = applyHeatGamma(boosted) / normFactor;
+    if (outPoints) {
+      outPoints.push([jLat, jLng, weight]);
+    } else {
+      layer.points.push([jLat, jLng, weight]);
+      layer.pointOwners.push(polygonId);
+    }
   });
   const added = candidates.length;
-  if (added > 0) refreshHeatLayer(layer);
+  if (added > 0 && !outPoints) refreshHeatLayer(layer);
   return added;
 }
 
@@ -4081,16 +4109,143 @@ function regenerateStroke(layer, strokeRecord) {
   appendStrokePoints(layer, strokeRecord);
 }
 
-function appendPolygonPoints(layer, rec, maxSamplesOverride) {
+// Reproduces L.HeatLayer.prototype._redraw's own screen-space bin-merging
+// (nearby points collapse into one weighted-average bin before simpleheat draws
+// them — see binNormalizationFactor's comment for why a fill's per-point weight
+// is pre-divided assuming this merge happens) against an arbitrary canvas
+// origin/size instead of the live map pane, so a baked polygon's own canvas
+// gets the same rendered look as the same points would get through the shared
+// layer. Reuses the actual `simpleheat` library (global, exposed by
+// leaflet-heat.js) for the stamp+colorize pass itself, guaranteeing pixel
+// parity with how every non-baked shape already renders.
+function renderHeatCanvasFromPoints(layer, points, originPt, width, height, zoom) {
+  const opts = zoomScaledOptions(layer);
+  const r = opts.radius + opts.blur;
+  const g = r / 2;
+  const maxOpt = opts.max === undefined ? 1 : opts.max;
+  const cellMap = new Map();
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    const pt = map.project(L.latLng(p[0], p[1]), zoom);
+    const x = pt.x - originPt.x, y = pt.y - originPt.y;
+    if (x < -r || y < -r || x > width + r || y > height + r) continue;
+    const weight = p[2];
+    const key = (Math.floor(y / g) + 2) + '_' + (Math.floor(x / g) + 2);
+    const existing = cellMap.get(key);
+    if (existing) {
+      existing[0] = (existing[0] * existing[2] + x * weight) / (existing[2] + weight);
+      existing[1] = (existing[1] * existing[2] + y * weight) / (existing[2] + weight);
+      existing[2] += weight;
+    } else {
+      cellMap.set(key, [x, y, weight]);
+    }
+  }
+  const heatData = [];
+  cellMap.forEach(b => heatData.push([Math.round(b[0]), Math.round(b[1]), Math.min(b[2], maxOpt)]));
+  const canvas = document.createElement('canvas');
+  canvas.width = width; canvas.height = height;
+  const heat = simpleheat(canvas);
+  heat.radius(opts.radius, opts.blur);
+  heat.gradient(opts.gradient);
+  heat.max(maxOpt);
+  heat.data(heatData).draw();
+  return canvas;
+}
+
+function unbakePolygonOverlay(rec) {
+  if (rec._bakedOverlay) { map.removeLayer(rec._bakedOverlay); rec._bakedOverlay = null; }
+  rec._baked = false;
+  rec._bakedPoints = null;
+}
+
+// A polygon/gradient zone's fill can be baked once into its own independent
+// static image (pinned to the shape's own lat/lng bounds) instead of living as
+// hundreds/thousands of points inside the shared layer.points array that
+// L.heatLayer redraws in full on ANY change anywhere in the layer. Once baked,
+// editing some OTHER shape, panning, or a stroke being painted elsewhere no
+// longer costs this shape anything at all — panning within/around it is just
+// Leaflet repositioning an ordinary image overlay, exactly like a tile layer.
+//
+// Bakes the shape's FULL extent (not just whatever's currently on screen),
+// unlike the classic viewport-clipped live-points path — a baked image has to
+// be self-contained since there's no "reveal more as you pan" step for a
+// static picture. That's exactly why this only attempts to bake when the
+// shape's full extent fits in a reasonably-sized canvas at the current zoom
+// (BAKE_MAX_CANVAS_DIM): a huge (country-scale) zone, or any zone once you've
+// zoomed in far enough that it would need a huge canvas, declines and falls
+// back to the existing viewport-clipped classic system instead — which is
+// already exactly the right tool for that case. A modest zone at a normal
+// working zoom is the common case this is actually for.
+//
+// Returns the number of points the bake used (which may be 0 — a real,
+// successful "this shape has nothing to show right now"), or null to mean
+// "declined, caller should fall back to the classic point-based fill."
+const BAKE_MAX_CANVAS_DIM = 1200;
+
+function bakePolygon(layer, rec, maxSamplesOverride) {
+  if (!layer.visible || rec._editingLive) return null;
   const vertsLL = rec.vertices.map(v => L.latLng(v[0], v[1]));
+  const fullBounds = L.latLngBounds(vertsLL);
+  // Skip (re)baking work for a shape nowhere near the current view — matches
+  // this app's existing "only do work for what's on screen" principle. An
+  // already-baked image just stays as-is (still correct, just not re-tuned for
+  // a zoom level nobody's currently looking at it through) until a later zoom
+  // step reaches it again; one that was never baked simply falls through to
+  // the classic path, which is itself viewport-clipped and will just no-op.
+  if (!viewportClippedBounds(fullBounds)) return rec._baked ? 0 : null;
+
+  const zoom = map.getZoom();
+  const nw = map.project(fullBounds.getNorthWest(), zoom);
+  const se = map.project(fullBounds.getSouthEast(), zoom);
+  const width = Math.ceil(se.x - nw.x), height = Math.ceil(se.y - nw.y);
+  if (width <= 0 || height <= 0 || width > BAKE_MAX_CANVAS_DIM || height > BAKE_MAX_CANVAS_DIM) return null;
+
+  const outPoints = [];
+  let added;
   if (rec.isGradient) {
     const axes = ensureGradientAxes(rec);
-    fillPolygonWithHeat(
+    added = fillPolygonWithHeat(layer, vertsLL, (lat, lng) => multiAxisGradientIntensity(lat, lng, axes), rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks, maxSamplesOverride, outPoints, fullBounds);
+  } else {
+    added = fillPolygonWithHeat(layer, vertsLL, () => rec.intensity, rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks, maxSamplesOverride, outPoints, fullBounds);
+  }
+  rec._lastFillBounds = fullBounds;
+  rec._lastFillZoom = zoom;
+  rec._lastFillCoarsened = lastFillWasCoarsened;
+
+  if (!added) { unbakePolygonOverlay(rec); return 0; }
+
+  const canvas = renderHeatCanvasFromPoints(layer, outPoints, nw, width, height, zoom);
+  if (rec._bakedOverlay) map.removeLayer(rec._bakedOverlay);
+  const overlay = L.imageOverlay(canvas.toDataURL(), fullBounds, { opacity: 1, interactive: false });
+  overlay.addTo(map);
+  // Same softening safety net the shared heat canvas gets (see applyCanvasBlur)
+  // — without it a baked shape's edge would look visibly crisper than every
+  // non-baked shape's blend right next to it.
+  const img = overlay.getElement();
+  if (img) img.style.filter = `blur(${canvasBlurPxFor(layer)}px)`;
+  rec._bakedOverlay = overlay;
+  rec._bakedZoom = zoom;
+  rec._baked = true;
+  // Cached so export/undo snapshots (see fullLayerPoints) can reconstruct this
+  // shape's points instantly instead of re-running the fill.
+  rec._bakedPoints = outPoints;
+  return added;
+}
+
+function appendPolygonPoints(layer, rec, maxSamplesOverride) {
+  const baked = bakePolygon(layer, rec, maxSamplesOverride);
+  if (baked !== null) return baked;
+
+  const vertsLL = rec.vertices.map(v => L.latLng(v[0], v[1]));
+  let added;
+  if (rec.isGradient) {
+    const axes = ensureGradientAxes(rec);
+    added = fillPolygonWithHeat(
       layer, vertsLL, (lat, lng) => multiAxisGradientIntensity(lat, lng, axes),
       rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks, maxSamplesOverride
     );
   } else {
-    fillPolygonWithHeat(layer, vertsLL, () => rec.intensity, rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks, maxSamplesOverride);
+    added = fillPolygonWithHeat(layer, vertsLL, () => rec.intensity, rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks, maxSamplesOverride);
   }
   // Remember what the fill just covered, so regenerateLayerShapes can skip re-filling
   // this shape on a later pan/zoom that doesn't actually reveal any new area —
@@ -4101,11 +4256,46 @@ function appendPolygonPoints(layer, rec, maxSamplesOverride) {
   // See lastFillWasCoarsened's own comment — lets the Fill % popup control tell the
   // user when their chosen value couldn't actually be honored at the current view.
   rec._lastFillCoarsened = lastFillWasCoarsened;
+  return added;
 }
 
 function regeneratePolygon(layer, rec) {
   filterLayerPoints(layer, (p, i) => layer.pointOwners[i] !== rec.id);
   appendPolygonPoints(layer, rec);
+}
+
+// Baked polygons keep their fill points out of layer.points as a rendering
+// optimization (see bakePolygon) — but undo/autosave snapshots and the native
+// JSON/viewer export have always trusted layer.points to hold EVERY point, and
+// changing that contract would ripple through restoreSnapshot and the viewer.
+// This reconstructs the same complete array on demand from each baked
+// polygon's own cached _bakedPoints, so every consumer of layer.points for
+// serialization keeps working exactly as before, with zero recomputation cost
+// beyond a few array concatenations.
+function fullLayerPoints(layer) {
+  const bakedPolys = layer.polygons.filter(p => p._baked && p._bakedPoints);
+  if (!bakedPolys.length) return { points: layer.points, pointOwners: layer.pointOwners };
+  const points = layer.points.slice();
+  const pointOwners = layer.pointOwners.slice();
+  bakedPolys.forEach(rec => {
+    rec._bakedPoints.forEach(p => { points.push(p); pointOwners.push(rec.id); });
+  });
+  return { points, pointOwners };
+}
+
+// Erase/Adjust/Correct all scan layer.points directly during a drag — a baked
+// polygon (whose fill lives only in a cached image, see bakePolygon) has
+// nothing there for them to find. Called right as one of those tools starts a
+// drag, so every polygon in the active layer is exactly as touchable as it was
+// before baking existed; each one gets a fresh bake attempt once the drag ends
+// (see finishAdjustStroke/finishCorrectionStroke/finishEraseStroke).
+function unbakeLayerPolygonsForEditing(layer) {
+  layer.polygons.forEach(rec => {
+    if (!rec._baked) return;
+    rec._editingLive = true;
+    unbakePolygonOverlay(rec);
+    appendPolygonPoints(layer, rec);
+  });
 }
 
 // Total raw-candidate budget shared across every polygon regenerateLayerShapes
@@ -4175,6 +4365,11 @@ function revealPannedPolygonArea(layer) {
   if (!layer.visible || !layer.polygons.length) return;
   const currentZoom = map.getZoom();
   const toRegen = layer.polygons.filter(rec => {
+    // A baked polygon's image already covers its FULL extent regardless of the
+    // viewport (see bakePolygon) — there's nothing for a pan to "reveal" that
+    // isn't already rendered, so this whole reveal-on-pan mechanism (built for
+    // the classic viewport-clipped fill) simply doesn't apply to it.
+    if (rec._baked) return false;
     if (rec._lastFillZoom !== currentZoom) return true; // zoom changed since the last fill — let regenerateLayerShapes's zoomend pass handle it instead, but don't skip if this runs first
     const vertsLL = rec.vertices.map(v => L.latLng(v[0], v[1]));
     const clipped = viewportClippedBounds(L.latLngBounds(vertsLL));
@@ -4325,6 +4520,11 @@ map.on('mousedown', (e) => {
       // per-point weight always match what finishCurrentStroke will settle on.
       startIndex: layer ? layer.points.length : 0
     };
+  } else {
+    // Erase/Adjust/Correct all scan layer.points directly (see below) — a baked
+    // polygon has none there to find (see unbakeLayerPolygonsForEditing).
+    const layer = getActiveLayer();
+    if (layer) unbakeLayerPolygonsForEditing(layer);
   }
   applyBrush(e.latlng);
 });
@@ -4349,10 +4549,22 @@ map.on('mousemove', (e) => {
     if (isDrawing && pendingBrushLatLng) applyBrush(pendingBrushLatLng);
   });
 });
+// Adjust's live drag already writes exact canonical values directly (unlike
+// Correct below), so this doesn't need to recompute anything for correctness
+// — it only needs to re-bake (see bakePolygon) whatever polygons it touched,
+// since unbakeLayerPolygonsForEditing turned them back into live points right
+// when this drag started.
 function finishAdjustStroke() {
   if (!adjustAffectedLayer) return;
-  scheduleGradientExposureCalibration(adjustAffectedLayer);
+  const layer = adjustAffectedLayer;
+  adjustAffectedShapeIds.forEach(id => {
+    const polyRec = layer.polygons.find(p => p.id === id);
+    if (polyRec) { polyRec._editingLive = false; regeneratePolygon(layer, polyRec); }
+  });
+  refreshHeatLayer(layer);
+  scheduleGradientExposureCalibration(layer);
   adjustAffectedLayer = null;
+  adjustAffectedShapeIds = new Set();
 }
 // The Correct tool's live drag only multiplies the already-stored (gamma'd,
 // normalized) weight directly, for cheap immediate feedback — it doesn't have
@@ -4360,7 +4572,8 @@ function finishAdjustStroke() {
 // raw*(1+boost) → gamma → /normFactor chain the way fillPolygonWithHeat/
 // appendStrokePoints do. Once the drag ends, regenerate every shape it touched
 // from scratch (now carrying the new boost marks) so the render settles into
-// that exact canonical value instead of staying at the live approximation.
+// that exact canonical value instead of staying at the live approximation —
+// this also naturally re-bakes any polygon it touched (see regeneratePolygon).
 function finishCorrectionStroke() {
   if (!correctAffectedLayer) return;
   const layer = correctAffectedLayer;
@@ -4368,12 +4581,28 @@ function finishCorrectionStroke() {
     const strokeRec = layer.strokes.find(s => s.id === id);
     if (strokeRec) regenerateStroke(layer, strokeRec);
     const polyRec = layer.polygons.find(p => p.id === id);
-    if (polyRec) regeneratePolygon(layer, polyRec);
+    if (polyRec) { polyRec._editingLive = false; regeneratePolygon(layer, polyRec); }
   });
   refreshHeatLayer(layer);
   scheduleGradientExposureCalibration(layer);
   correctAffectedLayer = null;
   correctAffectedShapeIds = new Set();
+}
+// Erase has no "recompute from canonical" step (unlike Correct) — removing
+// points directly IS the canonical result, and eraseMarks already ensure a
+// later regeneration (zoom, or this) honors it. This only exists to re-bake
+// (see bakePolygon) whatever polygons unbakeLayerPolygonsForEditing turned
+// back into live points when this drag started.
+function finishEraseStroke() {
+  if (!eraseAffectedLayer) return;
+  const layer = eraseAffectedLayer;
+  eraseAffectedShapeIds.forEach(id => {
+    const polyRec = layer.polygons.find(p => p.id === id);
+    if (polyRec) { polyRec._editingLive = false; regeneratePolygon(layer, polyRec); }
+  });
+  refreshHeatLayer(layer);
+  eraseAffectedLayer = null;
+  eraseAffectedShapeIds = new Set();
 }
 // A fast click-drag-release can end with a mousemove's rAF-coalesced applyBrush
 // call still pending (see the mousemove handler above) when mouseup fires —
@@ -4385,8 +4614,8 @@ function flushPendingBrush() {
   if (brushRafPending && pendingBrushLatLng) applyBrush(pendingBrushLatLng);
   brushRafPending = false;
 }
-map.on('mouseup', () => { flushPendingBrush(); isDrawing = false; lastPaintPoint = null; finishCurrentStroke(); finishAdjustStroke(); finishCorrectionStroke(); });
-document.addEventListener('mouseup', () => { flushPendingBrush(); isDrawing = false; lastPaintPoint = null; finishCurrentStroke(); finishAdjustStroke(); finishCorrectionStroke(); });
+map.on('mouseup', () => { flushPendingBrush(); isDrawing = false; lastPaintPoint = null; finishCurrentStroke(); finishAdjustStroke(); finishCorrectionStroke(); finishEraseStroke(); });
+document.addEventListener('mouseup', () => { flushPendingBrush(); isDrawing = false; lastPaintPoint = null; finishCurrentStroke(); finishAdjustStroke(); finishCorrectionStroke(); finishEraseStroke(); });
 
 function finishCurrentStroke() {
   if (!currentStroke) return;
@@ -4534,8 +4763,9 @@ function applyBrush(latlng) {
           const strokeRec = layer.strokes.find(s => s.id === id);
           if (strokeRec) strokeRec.eraseMarks.push({ lat: latlng.lat, lng: latlng.lng, radiusMeters });
           const polyRec = layer.polygons.find(p => p.id === id);
-          if (polyRec) polyRec.eraseMarks.push({ lat: latlng.lat, lng: latlng.lng, radiusMeters });
+          if (polyRec) { polyRec.eraseMarks.push({ lat: latlng.lat, lng: latlng.lng, radiusMeters }); eraseAffectedShapeIds.add(id); }
         });
+        eraseAffectedLayer = layer;
       }
       refreshHeatLayer(layer);
     }
@@ -4600,6 +4830,7 @@ function applyBrush(latlng) {
       affectedShapeIds.forEach(id => {
         const shape = getShapeRecord(id);
         if (shape) shape.rec.intensityOverrides.push({ lat: latlng.lat, lng: latlng.lng, radiusMeters, intensity: desiredIntensity });
+        if (shape && shape.kind === 'polygon') adjustAffectedShapeIds.add(id);
       });
       refreshHeatLayer(layer);
       adjustAffectedLayer = layer;
@@ -4679,8 +4910,14 @@ document.getElementById('btnClearActivePoints').addEventListener('click', () => 
 function buildExportData() {
   return {
     center: CENTER, zoom: ZOOM,
-    layers: layers.map(l => ({
-      name: l.name, criteria: l.criteria, visible: l.visible, points: l.points, pointOwners: l.pointOwners,
+    layers: layers.map(l => {
+      // See fullLayerPoints's own comment (used the same way in snapshotState)
+      // — a baked polygon's fill lives only in its cached image, not l.points,
+      // and this export format (unlike GeoJSON/KML) has always relied on
+      // l.points containing every point, including polygon fills.
+      const full = fullLayerPoints(l);
+      return {
+      name: l.name, criteria: l.criteria, visible: l.visible, points: full.points, pointOwners: full.pointOwners,
       radius: l.radius, blur: l.blur, maxIntensity: l.maxIntensity, gradient: l.gradient,
       paletteName: l.paletteName, referenceZoom: l.referenceZoom,
       strokes: l.strokes,
@@ -4690,7 +4927,8 @@ function buildExportData() {
         intensity: p.intensity,
         eraseMarks: p.eraseMarks || [], intensityOverrides: p.intensityOverrides || [], boostMarks: p.boostMarks || []
       }))
-    }))
+      };
+    })
   };
 }
 function downloadJson(data, filename) {
