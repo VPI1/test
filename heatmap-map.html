@@ -26,6 +26,36 @@
     if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
   } catch (e) {}
 })();
+// Same reasoning as the theme script above, but the stakes are higher than a
+// visual flash: Leaflet measures its container's actual pixel size the moment
+// `L.map(...)` runs, and never re-measures on its own afterward unless told
+// to. If the mobile CSS layout (sidebar becomes a fixed bottom drawer, so #map
+// gets the full width instead of width-minus-sidebar) applied AFTER that —
+// which it did, since the old device-detection code ran from the main script,
+// well after map construction — Leaflet permanently locked onto the WRONG,
+// narrower size. Every heat-layer canvas gets created at that stale size, and
+// map.removeLayer()+addTo() (exactly what switching Heatmap/Polygons view
+// mode does) re-appends canvases without ever correcting it, which is exactly
+// why toggling view mode on mobile made the whole heatmap disappear. Setting
+// data-device here, before Leaflet ever measures anything, means it's already
+// correct from the very first layout pass.
+(function() {
+  try {
+    var prefs = JSON.parse(localStorage.getItem('heatmapMapPrefs_v1')) || {};
+    var device = prefs.deviceMode;
+    if (!device) {
+      // ANY one signal saying mobile is enough — not "prefer userAgentData,
+      // else fall back" — so a single flaky/unavailable/not-yet-updated
+      // signal can't produce a false "desktop" read on a real phone.
+      var mobile = false;
+      if (navigator.userAgentData && navigator.userAgentData.mobile === true) mobile = true;
+      if (/Android|iPhone|iPad|iPod|Mobile|Windows Phone/i.test(navigator.userAgent)) mobile = true;
+      if (window.matchMedia && window.matchMedia('(pointer:coarse)').matches) mobile = true;
+      device = mobile ? 'mobile' : 'desktop';
+    }
+    document.documentElement.setAttribute('data-device', device === 'mobile' ? 'mobile' : 'desktop');
+  } catch (e) {}
+})();
 </script>
 <style>
   :root{
@@ -47,7 +77,15 @@
   }
   *{box-sizing:border-box;}
   html,body{height:100%;margin:0;font-family:'Inter',-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;}
-  #app{display:flex;height:100vh;width:100vw;overflow:hidden;}
+  /* dvh (dynamic viewport height) accounts for a mobile browser's own
+     address-bar/toolbar showing or hiding — plain vh is based on the LARGEST
+     possible viewport and overshoots the actually-visible area on most mobile
+     browsers, which is exactly what made the mobile bottom-drawer read as "a
+     tiny sliver, only fits one line" even though its own max-height math
+     (75vh) was correct in principle. vh stays first as a fallback for
+     browsers that don't support dvh; unsupported values are ignored per CSS
+     rules, so this can't break anything, only improve it where supported. */
+  #app{display:flex;height:100vh;height:100dvh;width:100vw;overflow:hidden;}
   #map{flex:1;height:100%;background:var(--bg);}
   #sidebar{
     width:340px;min-width:340px;background:var(--panel);border-left:1px solid var(--border);
@@ -238,7 +276,7 @@
 
   /* ---- Floating draw toolbar (picture-2 style) ---- */
   #drawToolbar{
-    position:fixed;top:64px;left:calc(50% - 170px);transform:translateX(-50%);z-index:1200;display:none;
+    position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:1200;display:none;
     background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 4px 14px #0007;
     padding:8px;gap:8px;flex-direction:column;
   }
@@ -253,7 +291,7 @@
 
   /* ---- Floating ruler panel ---- */
   #rulerPanel{
-    position:fixed;top:64px;left:calc(50% - 170px);transform:translateX(-50%);z-index:1200;display:none;
+    position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:1200;display:none;
     background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 4px 14px #0007;
     padding:9px 12px;font-size:12.5px;gap:8px;align-items:center;
   }
@@ -280,7 +318,7 @@
      it stays exactly this way regardless of viewport width once picked. */
   :root[data-device="mobile"] #sidebar{
     position:fixed; left:0; right:0; bottom:0; top:auto; width:100%; min-width:0;
-    max-height:75vh; border-left:none; border-top:1px solid var(--border);
+    max-height:75vh; max-height:75dvh; border-left:none; border-top:1px solid var(--border);
     border-radius:14px 14px 0 0; box-shadow:0 -6px 24px #0008;
     transform:translateY(calc(100% - 56px)); transition:transform .25s ease;
     z-index:1300;
@@ -291,7 +329,10 @@
     content:''; position:absolute; right:18px; top:50%; width:28px; height:3px;
     background:var(--sub); border-radius:2px; transform:translateY(-50%);
   }
-  :root[data-device="mobile"] #searchBox{ width:calc(100vw - 28px); }
+  /* Leaves clearance on the right for the stacked topright icon controls
+     (basemap/theme/device) — the old calc(100vw - 28px) ran the search box's
+     own rounded pill shape underneath/behind them. */
+  :root[data-device="mobile"] #searchBox{ width:calc(100vw - 150px); }
   :root[data-device="mobile"] .basemap-toggle-btn{ width:42px; height:42px; }
   :root[data-device="mobile"] button{ padding:9px 12px; font-size:13px; min-height:38px; }
   :root[data-device="mobile"] button.small{ padding:7px 10px; min-height:32px; }
@@ -833,18 +874,29 @@ map.addControl(new ThemeControl());
    once the user manually picks one, that choice is saved and always wins over
    auto-detection from then on, on this browser. */
 function detectDevice() {
-  if (navigator.userAgentData && typeof navigator.userAgentData.mobile === 'boolean') {
-    return navigator.userAgentData.mobile ? 'mobile' : 'desktop';
-  }
-  const uaMobile = /Android|iPhone|iPad|iPod|Mobile|Windows Phone/i.test(navigator.userAgent);
-  const coarsePointer = window.matchMedia && window.matchMedia('(pointer:coarse)').matches;
-  return (uaMobile || coarsePointer) ? 'mobile' : 'desktop';
+  // Any one signal saying mobile is enough — see the <head> script's copy of
+  // this same check for why it isn't "prefer userAgentData, else fall back."
+  let mobile = false;
+  if (navigator.userAgentData && navigator.userAgentData.mobile === true) mobile = true;
+  if (/Android|iPhone|iPad|iPod|Mobile|Windows Phone/i.test(navigator.userAgent)) mobile = true;
+  if (window.matchMedia && window.matchMedia('(pointer:coarse)').matches) mobile = true;
+  return mobile ? 'mobile' : 'desktop';
 }
 function applyDeviceMode(mode) {
   document.documentElement.setAttribute('data-device', mode === 'mobile' ? 'mobile' : 'desktop');
+  // The <head> script already sets this attribute correctly before Leaflet
+  // ever measures its container on first load (see there for why that
+  // matters) — but a runtime toggle click still changes the container's
+  // actual size via CSS (sidebar going from a fixed bottom drawer to a
+  // normal flex sibling, or back), and Leaflet has no way to notice a
+  // CSS-only resize on its own. Without this, switching layout mid-session
+  // left every heat-layer canvas permanently locked onto the size measured
+  // at page load, silently wrong from that point on.
+  map.invalidateSize();
 }
 const MOBILE_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/></svg>';
 const DESKTOP_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="13" rx="1.5"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>';
+let renderDeviceControlBtn = null;
 const DeviceControl = L.Control.extend({
   options: { position: 'topright' },
   onAdd: function() {
@@ -857,6 +909,7 @@ const DeviceControl = L.Control.extend({
       btn.title = mode === 'mobile' ? 'Switch to desktop layout' : 'Switch to mobile layout';
     };
     render();
+    renderDeviceControlBtn = render;
     L.DomEvent.on(btn, 'click', L.DomEvent.stop);
     L.DomEvent.on(btn, 'click', () => {
       const current = document.documentElement.getAttribute('data-device') === 'mobile' ? 'mobile' : 'desktop';
@@ -871,6 +924,23 @@ const DeviceControl = L.Control.extend({
 });
 map.addControl(new DeviceControl());
 applyDeviceMode(getPref('deviceMode', null) || detectDevice());
+// Defends against the rare case where the very first, synchronous <head>-script
+// check ran before some browser API it depends on (userAgentData, pointer
+// media query, viewport metrics) had actually settled — observed directly
+// while testing this in an automated/emulated browser context, where the
+// device-emulation override consistently wasn't active yet for that very
+// first script tag despite being correctly active moments later. Only
+// re-checks when nothing has been manually picked (getPref stays untouched
+// here), so a deliberate manual choice is never second-guessed.
+setTimeout(() => {
+  if (getPref('deviceMode', null) !== null) return;
+  const redetected = detectDevice();
+  const current = document.documentElement.getAttribute('data-device') === 'mobile' ? 'mobile' : 'desktop';
+  if (redetected !== current) {
+    applyDeviceMode(redetected);
+    if (renderDeviceControlBtn) renderDeviceControlBtn();
+  }
+}, 400);
 // Tapping the sidebar's header expands/collapses it — only visually meaningful
 // in the mobile layout (see the [data-device="mobile"] CSS), harmless no-op
 // otherwise.
