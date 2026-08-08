@@ -90,6 +90,15 @@
   #sidebar{
     width:340px;min-width:340px;background:var(--panel);border-left:1px solid var(--border);
     display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;
+    transition:width .22s ease,min-width .22s ease,border-color .22s ease;
+  }
+  /* Desktop-only collapse (see SidebarToggleControl) — width:0 lets #map's own
+     flex:1 grow to fill the freed space automatically, no separate #map rule
+     needed. Scoped away from mobile, which already has its own drawer
+     collapse (transform-based, doesn't affect #map's layout size at all) via
+     the .expanded class below. */
+  :root:not([data-device="mobile"]) #sidebar.collapsed{
+    width:0; min-width:0; border-left-color:transparent; overflow:hidden;
   }
   .sidebar-header{padding:16px 18px 12px;border-bottom:1px solid var(--border);}
   .sidebar-header h1{font-size:14.5px;margin:0 0 2px;font-weight:700;letter-spacing:.01em;}
@@ -947,6 +956,47 @@ setTimeout(() => {
 document.querySelector('.sidebar-header').addEventListener('click', () => {
   document.getElementById('sidebar').classList.toggle('expanded');
 });
+
+/* ---------------- Sidebar show/hide toggle ----------------
+   One button, two different mechanisms depending on layout: desktop collapses
+   #sidebar to width:0 (a CSS transition — see the .collapsed rule above) so
+   #map's own flex:1 reclaims the space; mobile just reuses the exact same
+   .expanded class the header-tap already toggles, so however you got the
+   drawer open or closed, the two controls always agree on its state. Session-
+   only (not remembered across reloads), same as the mobile drawer's own
+   open/closed state already was before this button existed. */
+const SIDEBAR_TOGGLE_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="15" y1="4" x2="15" y2="20"/></svg>';
+const SidebarToggleControl = L.Control.extend({
+  options: { position: 'topright' },
+  onAdd: function() {
+    const btn = L.DomUtil.create('div', 'basemap-toggle-btn');
+    btn.innerHTML = SIDEBAR_TOGGLE_ICON_SVG;
+    const render = () => {
+      const sidebar = document.getElementById('sidebar');
+      const isMobile = document.documentElement.getAttribute('data-device') === 'mobile';
+      const hidden = isMobile ? !sidebar.classList.contains('expanded') : sidebar.classList.contains('collapsed');
+      btn.title = hidden ? 'Show sidebar' : 'Hide sidebar';
+    };
+    render();
+    L.DomEvent.on(btn, 'click', L.DomEvent.stop);
+    L.DomEvent.on(btn, 'click', () => {
+      const sidebar = document.getElementById('sidebar');
+      const isMobile = document.documentElement.getAttribute('data-device') === 'mobile';
+      sidebar.classList.toggle(isMobile ? 'expanded' : 'collapsed');
+      render();
+    });
+    L.DomEvent.disableClickPropagation(btn);
+    return btn;
+  }
+});
+map.addControl(new SidebarToggleControl());
+// #sidebar's own width transition (desktop collapse) changes how much room
+// #map actually has — Leaflet doesn't notice a CSS-driven resize on its own
+// (see applyDeviceMode's own comment for the fuller version of this same
+// gotcha), so nudge it once the transition that could have changed the
+// width/border finishes. Harmless no-op for the mobile drawer's transform
+// transition, which never touches #map's own layout size.
+document.getElementById('sidebar').addEventListener('transitionend', () => map.invalidateSize());
 
 function setBasemap(key) {
   if (key === currentBasemapKey) return;
