@@ -180,6 +180,11 @@
   .info-modal-body h3{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--sub);margin:0 0 8px;}
   .info-modal-body p{margin:0 0 10px;}
   .info-modal-body p:last-child{margin-bottom:0;}
+  .info-modal-body a.info-link{color:var(--accent);text-decoration:none;font-weight:600;}
+  .info-modal-body a.info-link:hover{text-decoration:underline;}
+  .info-modal-links{display:flex;flex-wrap:wrap;gap:12px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);}
+  .info-modal-links a{display:inline-flex;align-items:center;gap:5px;color:var(--sub);font-size:11.5px;text-decoration:none;transition:color .12s;}
+  .info-modal-links a:hover{color:var(--accent);}
   .stop-row{display:flex;align-items:center;gap:6px;margin-bottom:6px;}
   .stop-row input[type=range]{flex:1;}
   .stop-row input[type=color]{width:32px;height:24px;border:none;background:none;padding:0;cursor:pointer;}
@@ -300,6 +305,11 @@
   .draw-opts-row{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--sub);}
   .draw-opts-row input[type=color]{width:28px;height:26px;padding:0;border:1px solid var(--border);border-radius:5px;background:none;cursor:pointer;}
   .draw-opts-row input[type=range]{width:80px;}
+  .draw-swatch-row{display:flex;gap:7px;flex-wrap:wrap;padding-top:2px;}
+  .draw-swatch{
+    width:20px;height:20px;border-radius:50%;border:1px solid var(--border);cursor:pointer;padding:0;
+  }
+  .draw-swatch.active{outline:2px solid var(--text);outline-offset:2px;}
   .draw-actions-row{display:flex;gap:5px;}
   .draw-actions-row button{flex:1;}
 
@@ -363,7 +373,7 @@
 
     <div class="view-mode-row">
       <button id="btnViewHeatmap" class="small active-toggle" style="flex:1;" title="Render the point-based heatmap (the normal editing view)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21c3.8 0 6.2-2.5 6.2-6 0-3.8-3-5.8-4-9.3-.9 1.8-1 3.6-2.6 3.6-.9 0-1-1.6-1-1.6-2 2-3.6 4.6-3.6 7.3 0 3.5 2.2 6 5 6z"/></svg> Heatmap</button>
-      <button id="btnViewPolygons" class="small" style="flex:1;" title="Hide the heatmap and show the Russian-controlled / gray zone territory polygons instead"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-9 4 5 3-4 6 8H3z"/></svg> Polygons</button>
+      <button id="btnViewPolygons" class="small" style="flex:1;" title="Hide the heatmap and show the Russian-controlled / gray zone territory polygons instead"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 21 8.5 17.5 20 6.5 20 3 8.5"/></svg> Polygons</button>
     </div>
 
     <div id="paintBar">
@@ -431,7 +441,7 @@
       <h3>Overlays</h3>
       <div class="overlay-row">
         <input type="checkbox" id="chkHeatmapMaster" checked>
-        <label for="chkHeatmapMaster"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2.5px;margin-right:3px;"><polygon points="1 6 8 3 16 6 23 3 23 18 16 21 8 18 1 21 1 6"/><line x1="8" y1="3" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="21"/></svg>Map</label>
+        <label for="chkHeatmapMaster"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2.5px;margin-right:7px;"><polygon points="1 6 8 3 16 6 23 3 23 18 16 21 8 18 1 21 1 6"/><line x1="8" y1="3" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="21"/></svg>Map</label>
       </div>
       <div class="overlay-row">
         <input type="checkbox" id="chkFortMaster">
@@ -522,7 +532,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v1.2</span>
+      <span class="version-tag">v1.3</span>
     </div>
   </div>
 </div>
@@ -549,9 +559,20 @@
   </div>
   <div class="draw-opts-row">
     <label>Color</label>
-    <input type="color" id="drawColor" value="#ff5c5c">
+    <input type="color" id="drawColor" value="#ffffff">
     <label>Size</label>
     <input type="range" id="drawSize" min="1" max="12" value="3">
+  </div>
+  <div class="draw-swatch-row" id="drawSwatchRow">
+    <button class="draw-swatch" data-color="#ff3b30" style="background:#ff3b30;" title="Red"></button>
+    <button class="draw-swatch" data-color="#ff8a80" style="background:#ff8a80;" title="Salmon"></button>
+    <button class="draw-swatch" data-color="#4a72f5" style="background:#4a72f5;" title="Blue"></button>
+    <button class="draw-swatch" data-color="#7fc4f0" style="background:#7fc4f0;" title="Sky blue"></button>
+    <button class="draw-swatch" data-color="#00c896" style="background:#00c896;" title="Teal"></button>
+    <button class="draw-swatch" data-color="#3a3a3a" style="background:#3a3a3a;" title="Dark gray"></button>
+    <button class="draw-swatch" data-color="#ffe066" style="background:#ffe066;" title="Yellow"></button>
+    <button class="draw-swatch" data-color="#ffab40" style="background:#ffab40;" title="Orange"></button>
+    <button class="draw-swatch active" data-color="#ffffff" style="background:#ffffff;" title="White"></button>
   </div>
   <div class="draw-actions-row">
     <button id="btnDrawUndo" title="Undo last stroke"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg> Undo</button>
@@ -589,8 +610,22 @@
       <p>In this case, the heatmap represents a gradient of Russian capability and actual frequency of infiltrations, ranging from one-time infiltrations, to occasional, and to frequent/consistent, everyday infiltrations.</p>
       <p>It is likely that the main system will be refined in the future.</p>
       <p>This map is also designed to offer users with a much wider range of tools to improve situational awareness and information.</p>
-      <p>The frontline data is almost fully taken from @DeepStateUA, with me only slightly tweaking it to correct some areas according to my information, as well as low-quality/confusing drawings.</p>
+      <p>The frontline data is almost fully taken from <a href="https://t.me/DeepStateUA" target="_blank" rel="noopener" class="info-link">@DeepStateUA</a>, with me only slightly tweaking it to correct some areas according to my information, as well as low-quality/confusing drawings.</p>
       <p><strong>The map is currently in an early Work In Progress stage.</strong></p>
+    </div>
+    <div class="info-modal-links">
+      <a href="https://x.com/Playfra0" target="_blank" rel="noopener">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18.9 2H22l-7.6 8.7L23 22h-7l-5.5-6.9L4.2 22H1l8.1-9.3L1 2h7.2l5 6.3L18.9 2zm-1.2 18h1.7L6.4 4H4.6l13.1 16z"/></svg>
+        @Playfra0
+      </a>
+      <a href="https://t.me/PlayfraOSINT" target="_blank" rel="noopener">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M21.9 4.3 18.7 20c-.2 1-.9 1.3-1.7.8l-4.7-3.5-2.3 2.2c-.3.3-.5.5-1 .5l.3-4.9 8.9-8c.4-.4-.1-.6-.6-.2L6.6 13 1.9 11.5c-1-.3-1-1 .2-1.5L20.6 3c.8-.3 1.6.2 1.3 1.3z"/></svg>
+        t.me/PlayfraOSINT
+      </a>
+      <a href="https://coff.ee/playfra" target="_blank" rel="noopener">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
+        coff.ee/playfra
+      </a>
     </div>
     <div class="modal-actions" style="justify-content:flex-end;">
       <button id="btnCloseInfo" class="primary">Close</button>
@@ -5627,11 +5662,17 @@ FORT_CHECKBOXES.wire.addEventListener('change', () => setFortificationVisible('w
    Independent of each layer's own visibility switch (layer.visible, see
    toggleLayerVisibility) — this is a single override that hides/shows every heat
    layer at once without touching each layer's own remembered state, so turning it
-   back on restores exactly whichever layers were already individually visible. */
+   back on restores exactly whichever layers were already individually visible.
+   Also independent of the Heatmap/Polygons view mode (see currentViewMode,
+   declared with that toggle below): this checkbox reflects only the user's OWN
+   manual on/off choice and is never flipped automatically when the view mode
+   changes — Polygons mode still correctly hides the heat rendering (via the
+   currentViewMode check in shouldShow below), it just doesn't do it by lying to
+   the user about their own "Map" checkbox having been switched off. */
 let heatmapMasterVisible = true;
 function applyHeatmapMasterVisibility() {
   layers.forEach(layer => {
-    const shouldShow = layer.visible && heatmapMasterVisible;
+    const shouldShow = layer.visible && heatmapMasterVisible && currentViewMode === 'heatmap';
     if (layer.heatLayer) {
       const isShown = map.hasLayer(layer.heatLayer);
       if (shouldShow && !isShown) layer.heatLayer.addTo(map);
@@ -5697,18 +5738,18 @@ function setControlZoneVisible(key, visible) {
 }
 
 /* ---------------- Heatmap / Polygons view mode ----------------
-   A bigger switch than any individual Overlays checkbox: Polygons mode hides
-   every heat layer (reusing heatmapMasterVisible, kept in sync with its own
-   Overlays checkbox) and shows the two control zones above instead. Painting/
-   editing tools stay fully functional in either mode — this only changes what
-   renders, not what you can do. */
+   Switches which rendering system is active — heat points, or the two control
+   zone polygons above — without touching the "Map" Overlays checkbox at all
+   (see applyHeatmapMasterVisibility's own comment for why). Painting/editing
+   tools stay fully functional in either mode — this only changes what renders,
+   not what you can do. */
+let currentViewMode = 'heatmap';
 const btnViewHeatmap = document.getElementById('btnViewHeatmap');
 const btnViewPolygons = document.getElementById('btnViewPolygons');
 function applyViewMode(mode, skipSave) {
+  currentViewMode = mode;
   btnViewHeatmap.classList.toggle('active-toggle', mode === 'heatmap');
   btnViewPolygons.classList.toggle('active-toggle', mode === 'polygons');
-  heatmapMasterVisible = mode === 'heatmap';
-  document.getElementById('chkHeatmapMaster').checked = heatmapMasterVisible;
   applyHeatmapMasterVisibility();
   setControlZoneVisible('russia', mode === 'polygons');
   setControlZoneVisible('grayzone', mode === 'polygons');
@@ -5920,10 +5961,59 @@ const drawColorInput = document.getElementById('drawColor');
 const drawSizeInput = document.getElementById('drawSize');
 const DRAW_STORAGE_KEY = 'heatmapMapLocalDrawings_v1';
 
+// Quick preset swatches alongside the native color picker — clicking one just
+// sets drawColorInput's own value (the single source of truth mousedown reads
+// from), so nothing else needs to know swatches exist. The reverse direction
+// (picking a custom color via the native picker) clears every swatch's active
+// ring unless it happens to exactly match one, via drawColorInput's own
+// 'input' event below.
+document.querySelectorAll('.draw-swatch').forEach(sw => {
+  sw.addEventListener('click', () => {
+    drawColorInput.value = sw.dataset.color;
+    document.querySelectorAll('.draw-swatch').forEach(s => s.classList.toggle('active', s === sw));
+  });
+});
+drawColorInput.addEventListener('input', () => {
+  document.querySelectorAll('.draw-swatch').forEach(s => {
+    s.classList.toggle('active', s.dataset.color.toLowerCase() === drawColorInput.value.toLowerCase());
+  });
+});
+
 function saveDrawingsToStorage() {
   try {
     localStorage.setItem(DRAW_STORAGE_KEY, JSON.stringify(localDrawings.map(({ _layer, previewLayer, ...rest }) => rest)));
   } catch (e) { /* storage full/unavailable — drawings still work this session, just won't persist */ }
+}
+
+// A fast freehand stroke's raw mousemove samples end up sparse and far apart —
+// L.polyline just connects them with straight segments, reading as a blocky,
+// angular line rather than a smooth pencil stroke. Catmull-Rom spline
+// interpolation threads a smooth curve THROUGH every original point (it doesn't
+// move any of them, just adds more points along a curve between each pair),
+// so the stroke keeps its actual drawn shape but the sharp corners between
+// sparse samples soften into a flowing line. Only applied once, when a pencil
+// stroke is finalized (see the mouseup handler below) — the live preview while
+// dragging stays as the raw points for cheap, simple feedback.
+function smoothPencilPoints(points, segmentsPerSpan) {
+  if (points.length < 3) return points;
+  segmentsPerSpan = segmentsPerSpan || 8;
+  const n = points.length;
+  const result = [];
+  for (let i = 0; i < n - 1; i++) {
+    const p0 = points[Math.max(0, i - 1)];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[Math.min(n - 1, i + 2)];
+    for (let t = 0; t < segmentsPerSpan; t++) {
+      const s = t / segmentsPerSpan;
+      const s2 = s * s, s3 = s2 * s;
+      const lat = 0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * s + (2*p0[0] - 5*p1[0] + 4*p2[0] - p3[0]) * s2 + (-p0[0] + 3*p1[0] - 3*p2[0] + p3[0]) * s3);
+      const lng = 0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * s + (2*p0[1] - 5*p1[1] + 4*p2[1] - p3[1]) * s2 + (-p0[1] + 3*p1[1] - 3*p2[1] + p3[1]) * s3);
+      result.push([lat, lng]);
+    }
+  }
+  result.push(points[n - 1]);
+  return result;
 }
 
 function buildArrowHead(from, to, color, size) {
@@ -6009,6 +6099,7 @@ map.on('mouseup', () => {
   if (d.type === 'rectangle' && L.latLngBounds(d.bounds).getNorthEast().distanceTo(L.latLngBounds(d.bounds).getSouthWest()) < 4) return;
   if ((d.type === 'line' || d.type === 'arrow') && L.latLng(d.points[0]).distanceTo(d.points[1]) < 2) return;
   if (d.type === 'pencil' && d.points.length < 2) return;
+  if (d.type === 'pencil') d.points = smoothPencilPoints(d.points);
   localDrawings.push(d);
   renderDrawing(d);
   saveDrawingsToStorage();
