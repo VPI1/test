@@ -113,6 +113,7 @@
     text-decoration:none;transition:color .12s;
   }
   .credit-block a:hover{color:var(--accent);}
+  .version-tag{font-size:9.5px;color:var(--sub);opacity:.55;letter-spacing:.02em;}
   .toolbar{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:6px;}
   button{
     background:var(--panel2);color:var(--text);border:1px solid var(--border);
@@ -175,6 +176,10 @@
     width:320px;max-height:80vh;overflow-y:auto;
   }
   .modal h2{font-size:14px;margin:0 0 10px;}
+  .info-modal-body{font-size:12.5px;line-height:1.55;color:var(--text);}
+  .info-modal-body h3{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--sub);margin:0 0 8px;}
+  .info-modal-body p{margin:0 0 10px;}
+  .info-modal-body p:last-child{margin-bottom:0;}
   .stop-row{display:flex;align-items:center;gap:6px;margin-bottom:6px;}
   .stop-row input[type=range]{flex:1;}
   .stop-row input[type=color]{width:32px;height:24px;border:none;background:none;padding:0;cursor:pointer;}
@@ -363,9 +368,6 @@
 
     <div id="paintBar">
       <div class="paint-mode-row">
-        <button id="btnAutoExposure" style="flex:1;" title="Recalibrates each layer's color range to the actual density it renders, so the full color scale is used proportionally instead of one end dominating when overlapping points sum higher than intended."><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/><line x1="4.9" y1="4.9" x2="7" y2="7"/><line x1="17" y1="17" x2="19.1" y2="19.1"/><line x1="4.9" y1="19.1" x2="7" y2="17"/><line x1="17" y1="7" x2="19.1" y2="4.9"/></svg> Auto Exposure: OFF</button>
-      </div>
-      <div class="paint-mode-row">
         <button id="btnPaint" title="Click-drag on map to paint heat points"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="19" x2="15" y2="9"/><circle cx="18" cy="6" r="3"/></svg> Paint</button>
         <button id="btnPoint" title="Click to place a single point at the fixed intensity"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s7-7.58 7-12A7 7 0 0 0 5 10c0 4.42 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></svg> Point</button>
         <button id="btnErase" title="Click-drag to remove nearby points"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="8" rx="1.5" transform="rotate(-30 12 12)"/></svg> Erase</button>
@@ -429,7 +431,7 @@
       <h3>Overlays</h3>
       <div class="overlay-row">
         <input type="checkbox" id="chkHeatmapMaster" checked>
-        <label for="chkHeatmapMaster"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2.5px;margin-right:3px;"><path d="M12 21c3.8 0 6.2-2.5 6.2-6 0-3.8-3-5.8-4-9.3-.9 1.8-1 3.6-2.6 3.6-.9 0-1-1.6-1-1.6-2 2-3.6 4.6-3.6 7.3 0 3.5 2.2 6 5 6z"/></svg>Heatmap</label>
+        <label for="chkHeatmapMaster"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2.5px;margin-right:3px;"><polygon points="1 6 8 3 16 6 23 3 23 18 16 21 8 18 1 21 1 6"/><line x1="8" y1="3" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="21"/></svg>Map</label>
       </div>
       <div class="overlay-row">
         <input type="checkbox" id="chkFortMaster">
@@ -516,6 +518,11 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M21.9 4.3 18.7 20c-.2 1-.9 1.3-1.7.8l-4.7-3.5-2.3 2.2c-.3.3-.5.5-1 .5l.3-4.9 8.9-8c.4-.4-.1-.6-.6-.2L6.6 13 1.9 11.5c-1-.3-1-1 .2-1.5L20.6 3c.8-.3 1.6.2 1.3 1.3z"/></svg>
         t.me/PlayfraOSINT
       </a>
+      <a href="https://coff.ee/playfra" target="_blank" rel="noopener">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
+        coff.ee/playfra
+      </a>
+      <span class="version-tag">v1.2</span>
     </div>
   </div>
 </div>
@@ -569,6 +576,24 @@
     <div class="modal-actions">
       <button id="btnCancelPalette">Cancel</button>
       <button id="btnApplyPalette" class="primary">Apply</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="infoModal">
+  <div class="modal" style="width:400px;max-width:90vw;">
+    <h2>About this map</h2>
+    <div class="info-modal-body">
+      <h3>General info</h3>
+      <p>This map is designed to offer a new modern cartographic interpretation to the Ukraine-Russia war by taking into account its main characteristics, fragmentation of the contact line and infiltrations and introducing a new map visualization technique: the heatmap opposed to plain polygons, which already some time ago has been suggested by some soldiers, that highlight how it's impossible to accurately describe what's happening at the front with only a red and gray zone without packing in them dozens of shades of situations, thereby making this system very confusing to viewers.</p>
+      <p>In this case, the heatmap represents a gradient of Russian capability and actual frequency of infiltrations, ranging from one-time infiltrations, to occasional, and to frequent/consistent, everyday infiltrations.</p>
+      <p>It is likely that the main system will be refined in the future.</p>
+      <p>This map is also designed to offer users with a much wider range of tools to improve situational awareness and information.</p>
+      <p>The frontline data is almost fully taken from @DeepStateUA, with me only slightly tweaking it to correct some areas according to my information, as well as low-quality/confusing drawings.</p>
+      <p><strong>The map is currently in an early Work In Progress stage.</strong></p>
+    </div>
+    <div class="modal-actions" style="justify-content:flex-end;">
+      <button id="btnCloseInfo" class="primary">Close</button>
     </div>
   </div>
 </div>
@@ -860,8 +885,8 @@ const ThemeControl = L.Control.extend({
     const btn = L.DomUtil.create('div', 'basemap-toggle-btn');
     // Showing the icon for the theme a click would SWITCH TO (moon while in dark
     // mode, sun while in light mode) — matches the convention of the sun/moon icon
-    // in most apps' own theme togglers, and matches Auto Exposure's sun icon
-    // reading as "the effect the button turns on" rather than "the current state".
+    // in most apps' own theme togglers, reading as "the effect the button turns
+    // on" rather than "the current state" (same convention DeviceControl uses).
     btn.innerHTML = currentTheme() === 'light' ? MOON_TOGGLE_ICON : SUN_TOGGLE_ICON;
     btn.title = 'Toggle light/dark theme';
     L.DomEvent.on(btn, 'click', L.DomEvent.stop);
@@ -997,6 +1022,27 @@ map.addControl(new SidebarToggleControl());
 // width/border finishes. Harmless no-op for the mobile drawer's transform
 // transition, which never touches #map's own layout size.
 document.getElementById('sidebar').addEventListener('transitionend', () => map.invalidateSize());
+
+/* ---------------- Info modal ----------------
+   Reuses the exact same .modal-overlay/.open pattern paletteModal already
+   established (see openPaletteModal) — a plain class toggle, not a fresh
+   mechanism. */
+const infoModal = document.getElementById('infoModal');
+const InfoControl = L.Control.extend({
+  options: { position: 'topright' },
+  onAdd: function() {
+    const btn = L.DomUtil.create('div', 'basemap-toggle-btn');
+    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="11" x2="12" y2="16"/><circle cx="12" cy="7.5" r="0.5" fill="currentColor" stroke="none"/></svg>';
+    btn.title = 'About this map';
+    L.DomEvent.on(btn, 'click', L.DomEvent.stop);
+    L.DomEvent.on(btn, 'click', () => infoModal.classList.add('open'));
+    L.DomEvent.disableClickPropagation(btn);
+    return btn;
+  }
+});
+map.addControl(new InfoControl());
+document.getElementById('btnCloseInfo').addEventListener('click', () => infoModal.classList.remove('open'));
+infoModal.addEventListener('click', (e) => { if (e.target === infoModal) infoModal.classList.remove('open'); });
 
 function setBasemap(key) {
   if (key === currentBasemapKey) return;
@@ -1416,7 +1462,6 @@ function makeLayer(name) {
     radius: 25,
     blur: 18,
     maxIntensity: 1.0,
-    autoExposedMax: null, // set by autoExposeLayer; kept separate from maxIntensity so turning Auto Exposure off restores the manual value instead of staying stuck at the last calibrated one
     referenceZoom: map.getZoom(),
     gradient: JSON.parse(JSON.stringify(DEFAULT_GRADIENT)),
     paletteName: 'Classic',
@@ -1451,10 +1496,7 @@ function zoomScaledOptions(layer) {
   return {
     radius,
     blur,
-    // Auto Exposure writes its calibrated ceiling to autoExposedMax, not maxIntensity,
-    // specifically so turning it off falls straight back to the manual value instead
-    // of staying stuck at whatever was last auto-calibrated.
-    max: (autoExposureEnabled && layer.autoExposedMax != null) ? layer.autoExposedMax : layer.maxIntensity,
+    max: layer.maxIntensity,
     gradient: gradientArrayToObj(layer.gradient),
     // leaflet-heat's own _redraw() silently rescales every point's weight by
     // 1/2^clamp(maxZoom-currentZoom, 0, 12), meant to compensate for its internal
@@ -1562,7 +1604,7 @@ function refreshHeatLayer(layer) {
   layer.heatLayer.setLatLngs(layer.points);
 }
 
-/* ---------------- Auto Exposure ----------------
+/* ---------------- Exposure calibration ----------------
    leaflet-heat's _redraw() sums overlapping points' weights per screen bin, then
    clips each bin at options.max BEFORE handing it to simpleheat (see the fetched
    source: `Math.min(s[2], c)` where c is options.max). binNormalizationFactor above
@@ -1573,15 +1615,12 @@ function refreshHeatLayer(layer) {
    into a much smaller slice of the gradient (empirically confirmed: sampling a test
    gradient zone's rendered pixels showed t=0.6 through t=0.9 all landing within a
    couple of alpha units of each other — already fully clipped).
-   Auto Exposure fixes this exactly rather than heuristically: temporarily render at
-   a deliberately high ceiling so nothing clips, measure the TRUE peak alpha that
+   This fixes it exactly rather than heuristically: temporarily render at a
+   deliberately high ceiling so nothing clips, measure the TRUE peak alpha that
    actually occurs, convert that back to the true peak summed weight, and set
    layer.maxIntensity to that — so the peak still saturates fully, but everything
    below it is spread proportionally across the real range instead of prematurely
    maxing out. This is a camera-style meter-then-expose pass, not a one-time guess. */
-let autoExposureEnabled = false;
-const btnAutoExposure = document.getElementById('btnAutoExposure');
-const SUN_ICON_SVG = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2.5px;"><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/><line x1="4.9" y1="4.9" x2="7" y2="7"/><line x1="17" y1="17" x2="19.1" y2="19.1"/><line x1="4.9" y1="19.1" x2="7" y2="17"/><line x1="17" y1="7" x2="19.1" y2="4.9"/></svg>';
 
 // Measures the current peak rendered alpha at a given max, by mutating the live
 // heat layer's options directly and calling its internal _updateOptions()/_redraw()
@@ -1599,7 +1638,7 @@ function measurePeakAlphaAtMax(layer, max, rect) {
   // synced from options.max via _updateOptions(). That method ALSO rebuilds the
   // radius/blur circle template and the gradient colormap canvas every call, which
   // don't change between probes — only max does — so calling it here (many times per
-  // autoExposeLayer) redoes that work needlessly. Setting _heat's max directly skips
+  // calibrateGradientExposure) redoes that work needlessly. Setting _heat's max directly skips
   // the rebuild and was measured to cut this probe's cost substantially.
   layer.heatLayer._heat.max(max);
   layer.heatLayer._redraw();
@@ -1634,13 +1673,24 @@ function layerScreenRect(layer) {
   return { x, y, w: Math.max(1, x2 - x), h: Math.max(1, y2 - y) };
 }
 
-function autoExposeLayer(layer) {
-  if (!autoExposureEnabled) return;
+// Recalibrates layer.maxIntensity so this layer's peak rendered brightness lands
+// right at full saturation instead of drifting dim/clipped as points/zoom/gradient
+// change. Gradient stored weights are small by design (gamma pre-compensation
+// divided by the bin-overlap normalization factor — see
+// applyHeatGamma/binNormalizationFactor), so at the default max=1 an edit IS real
+// (the underlying per-point values do change) but visually barely perceptible,
+// reading as "nothing happens" even though it did. Runs unconditionally on
+// creation, every edit, and every zoom step — a control that can't show its own
+// effect is effectively broken, so this was never made opt-in.
+function calibrateGradientExposure(layer) {
   if (!layer || !layer.visible || !layer.heatLayer || !layer.points.length) return;
   const rect = layerScreenRect(layer);
-  // A first attempt tried to derive the true peak summed weight algebraically from a
-  // single high-max probe (peakAlpha/255 * probeMax). That assumes rendered alpha is
-  // linear in weight, but it isn't: leaflet-heat draws one pre-blurred circle per
+  const TARGET_ALPHA = 250;
+  let lo = 0.02, hi = 20;
+  for (let guard = 0; guard < 4 && measurePeakAlphaAtMax(layer, hi, rect) > TARGET_ALPHA; guard++) hi *= 5;
+  // A first attempt tried to derive the true peak summed weight algebraically from
+  // a single high-max probe (peakAlpha/255 * probeMax). That assumes rendered alpha
+  // is linear in weight, but it isn't: leaflet-heat draws one pre-blurred circle per
   // merged bin, and overlapping circles COMPOSITE via normal canvas alpha blending
   // (`1-(1-a)^n` for n overlapping draws of alpha a), not by summing — so a single
   // probe under- or over-shoots depending on how many bins happen to overlap at the
@@ -1648,56 +1698,8 @@ function autoExposeLayer(layer) {
   // non-increasing as max grows (dividing by a bigger ceiling can only dim, never
   // brighten, whatever the compositing does underneath), so searching for the max
   // where peak alpha lands at TARGET_ALPHA converges correctly regardless.
-  const TARGET_ALPHA = 250; // just under full saturation (255), so the peak still reads as the top color
-  let lo = 0.02, hi = 20;
-  for (let guard = 0; guard < 4 && measurePeakAlphaAtMax(layer, hi, rect) > TARGET_ALPHA; guard++) hi *= 5;
-  // The true optimal max can land BELOW the starting lo too — a heavily
-  // gamma/normFactor-compressed stroke or fill, especially one with less
-  // per-bin overlap at a given zoom, routinely has a true peak weight well
-  // under 0.02. Without this, lo=0.02 was a hard floor the search could never
-  // probe past: if peak-at-lo was already under TARGET_ALPHA (max already too
-  // high even at the smallest candidate), every subsequent mid only made it
-  // dimmer too, so the search just converged to ~lo instead of the actually-
-  // correct (smaller) max — rendering under-saturated despite "converging".
-  // Shrinking lo the same way hi grows fixes the symmetric case.
-  for (let guard = 0; guard < 6 && measurePeakAlphaAtMax(layer, lo, rect) < TARGET_ALPHA; guard++) lo /= 5;
-  let converged = true;
-  // Tried cutting this to 9 steps (each is a full leaflet-heat _redraw(), the
-  // dominant cost of this whole calibration — measured directly at ~85% of it).
-  // Measured the actual effect directly rather than assuming: barely faster (the
-  // guard-bracketing loops above just did more work to compensate) and visibly
-  // worse convergence — peak alpha landed at 85-120 instead of the ~250 target on
-  // real data. Reverted; 13 stays.
-  for (let i = 0; i < 13; i++) {
-    const mid = (lo + hi) / 2;
-    const peak = measurePeakAlphaAtMax(layer, mid, rect);
-    if (peak < 0) { converged = false; break; }
-    if (peak > TARGET_ALPHA) lo = mid; else hi = mid;
-  }
-  if (converged) layer.autoExposedMax = hi;
-  refreshHeatLayer(layer); // fresh, consistent render at the final calibrated max
-}
-
-// Like autoExposeLayer, but writes directly to the manual maxIntensity baseline
-// instead of the auto-exposure-gated autoExposedMax, and runs regardless of the
-// global Auto Exposure toggle. Gradient stored weights are small by design (gamma
-// pre-compensation divided by the bin-overlap normalization factor — see
-// applyHeatGamma/binNormalizationFactor), so at the default max=1 a Start/End edit
-// IS real (the underlying per-point values do change) but visually barely
-// perceptible, reading as "nothing happens" even though it did. A gradient control
-// that can't show its own effect is effectively broken regardless of the user's
-// general Auto Exposure preference, so editing a gradient's values in the popup
-// always calibrates this layer's exposure — unlike the general toggle, this isn't
-// "silently recalculating in the background", it's a direct result of the exact
-// action the user just took, and only affects the layer they're actively editing.
-function calibrateGradientExposure(layer) {
-  if (!layer || !layer.visible || !layer.heatLayer || !layer.points.length) return;
-  const rect = layerScreenRect(layer);
-  const TARGET_ALPHA = 250;
-  let lo = 0.02, hi = 20;
-  for (let guard = 0; guard < 4 && measurePeakAlphaAtMax(layer, hi, rect) > TARGET_ALPHA; guard++) hi *= 5;
-  // See the matching guard in autoExposeLayer — lo=0.02 was a hard floor the
-  // search could never probe past, so a true peak weight below that (common
+  // lo=0.02 was a hard floor the search could never probe past, so a true peak
+  // weight below that (common
   // for small gamma/normFactor-compressed values) converged to an
   // under-saturated max instead of the actually-correct smaller one.
   for (let guard = 0; guard < 6 && measurePeakAlphaAtMax(layer, lo, rect) < TARGET_ALPHA; guard++) lo /= 5;
@@ -1718,42 +1720,27 @@ function calibrateGradientExposure(layer) {
   refreshHeatLayer(layer);
 }
 
-// calibrateGradientExposure/autoExposeLayer are both genuinely expensive (a 9-13
-// step binary search, each step a full synchronous canvas redraw) and were being
-// called directly and synchronously from popup actions — delete, move, every
-// keystroke in a Start/End field, every axis add/remove — meaning the ACTION that
-// triggered it (removing a shape, moving it to another layer) had to wait for that
-// whole search to finish before the browser could even paint the result, reading
-// as the whole map stuttering on every click. Deferring it to a macrotask (a bare
-// setTimeout) lets the browser paint whatever the triggering action already did
-// (shape gone, moved, etc.) first, so that feels instant — the exposure recalc
-// still happens, just as a brief secondary settle a moment later instead of
-// blocking the action itself. The debounce on top means a rapid sequence (typing
-// several digits, or several quick edits) collapses into one recalculation after
-// things pause, instead of one full binary search per keystroke.
+// calibrateGradientExposure is genuinely expensive (a 9-13 step binary search,
+// each step a full synchronous canvas redraw) and was being called directly and
+// synchronously from popup actions — delete, move, every keystroke in a Start/End
+// field, every axis add/remove — meaning the ACTION that triggered it (removing a
+// shape, moving it to another layer) had to wait for that whole search to finish
+// before the browser could even paint the result, reading as the whole map
+// stuttering on every click. Deferring it to a macrotask (a bare setTimeout) lets
+// the browser paint whatever the triggering action already did (shape gone, moved,
+// etc.) first, so that feels instant — the exposure recalc still happens, just as a
+// brief secondary settle a moment later instead of blocking the action itself. The
+// debounce on top means a rapid sequence (typing several digits, or several quick
+// edits) collapses into one recalculation after things pause, instead of one full
+// binary search per keystroke.
 let gradientExposureTimer = null;
 function scheduleGradientExposureCalibration(layer) {
   if (gradientExposureTimer) clearTimeout(gradientExposureTimer);
   gradientExposureTimer = setTimeout(() => {
     gradientExposureTimer = null;
-    if (autoExposureEnabled) autoExposeLayer(layer); else calibrateGradientExposure(layer);
+    calibrateGradientExposure(layer);
   }, 150);
 }
-
-btnAutoExposure.addEventListener('click', () => {
-  autoExposureEnabled = !autoExposureEnabled;
-  btnAutoExposure.classList.toggle('active-toggle', autoExposureEnabled);
-  btnAutoExposure.innerHTML = SUN_ICON_SVG + (autoExposureEnabled ? ' Auto Exposure: ON' : ' Auto Exposure: OFF');
-  if (autoExposureEnabled) {
-    layers.forEach(autoExposeLayer);
-  } else {
-    // autoExposeLayer only ever wrote to autoExposedMax, never touched the manual
-    // maxIntensity — so simply re-rendering with the flag off is enough for
-    // zoomScaledOptions to fall back to it. Without this, layers stayed rendered at
-    // their last calibrated max until something else happened to trigger a rebuild.
-    layers.forEach(refreshHeatLayer);
-  }
-});
 
 function performZoomRegeneration() {
   layers.forEach(layer => {
@@ -1771,8 +1758,8 @@ function performZoomRegeneration() {
     // cloud it was originally sampled at falling apart into visible dots.
     regenerateLayerShapes(layer);
   });
-  // autoExposeLayer used to be called synchronously right here, once per layer,
-  // on every single zoom step. Measured directly: with a realistic number of
+  // calibrateGradientExposure used to be called synchronously right here, once per
+  // layer, on every single zoom step. Measured directly: with a realistic number of
   // painted points, ONE call can take 300-500ms+ (each of its ~13-19 binary-search
   // steps is a full canvas redraw) — with several layers that's seconds of
   // synchronous work blocking the zoom's own visual settle on every scroll tick,
@@ -1784,21 +1771,17 @@ function performZoomRegeneration() {
 }
 
 let zoomExposureTimer = null;
-// Used to gate this on autoExposureEnabled entirely — meaning with the toggle off,
-// a layer's rendered brightness was left purely to zoomOverlapCorrection's formula
-// (see fillPolygonWithHeat/binNormalizationFactor), which corrects for the MIN/MAX
-// render-radius clamp's effect on point-count-per-bin, but not for how leaflet-heat's
-// alpha compositing actually responds to that (measured directly: with the formula
-// alone, peak rendered alpha swings from ~250 (correct) at the layer's own
-// referenceZoom down to under 70 five zoom levels out, despite an unchanged manual
-// Max — reading as "everything blue" until zooming back in). calibrateGradientExposure
-// already solves exactly this the same way Auto Exposure does (measure actual
-// rendered peak alpha, binary-search the max that lands it at TARGET_ALPHA) — it was
-// previously only wired to gradient popup edits. Running it here too, unconditionally,
-// keeps a layer's peak brightness visually consistent at every zoom without requiring
-// the Auto Exposure toggle at all; that toggle now purely controls whether exposure
-// ALSO keeps re-tracking continuously as you pan within a zoom level (see
-// autoExposeLayer/moveend below), which is a materially heavier, opt-in behavior.
+// Without this, a layer's rendered brightness was left purely to
+// zoomOverlapCorrection's formula (see fillPolygonWithHeat/binNormalizationFactor),
+// which corrects for the MIN/MAX render-radius clamp's effect on point-count-per-bin,
+// but not for how leaflet-heat's alpha compositing actually responds to that
+// (measured directly: with the formula alone, peak rendered alpha swings from ~250
+// (correct) at the layer's own referenceZoom down to under 70 five zoom levels out,
+// despite an unchanged manual Max — reading as "everything blue" until zooming back
+// in). calibrateGradientExposure (measure actual rendered peak alpha, binary-search
+// the max that lands it at TARGET_ALPHA) was previously only wired to gradient popup
+// edits — running it here too, unconditionally, keeps a layer's peak brightness
+// visually consistent at every zoom regardless.
 function scheduleZoomExposureRecalibration() {
   if (zoomExposureTimer) clearTimeout(zoomExposureTimer);
   zoomExposureTimer = setTimeout(() => {
@@ -1810,14 +1793,13 @@ function scheduleZoomExposureRecalibration() {
     // against points still spaced for a DIFFERENT zoom than the map is
     // currently at is wildly wrong (measured directly: inflated a calibrated
     // max by ~390x in one repro), and that bad max sticks once it lands. This
-    // call is scoped to ONLY the zoom/pan-triggered exposure timers (here and
-    // in the moveend handler below) rather than living inside autoExposeLayer
-    // itself — putting it there too was overzealous: it also fired during an
-    // in-progress axis drag/Adjust/Correct edit (those schedule exposure
-    // calibration too), wiping the live, not-yet-committed preview back to
-    // the last COMMITTED state and reading as "the edit gets undone a moment
-    // after you make it." Those paths never had a zoom-mismatch to begin
-    // with, so they don't need this.
+    // call is scoped to ONLY this zoom-triggered exposure timer, rather than
+    // living inside calibrateGradientExposure itself — putting it there too
+    // was overzealous: it also fired during an in-progress axis drag/Adjust/
+    // Correct edit (those schedule exposure calibration too), wiping the
+    // live, not-yet-committed preview back to the last COMMITTED state and
+    // reading as "the edit gets undone a moment after you make it." Those
+    // paths never had a zoom-mismatch to begin with, so they don't need this.
     layers.forEach(regenerateLayerShapes);
     // Each layer's calibration is itself a real, measured cost (300-500ms+ for a
     // layer with a realistic point count — see the comment above performZoomRegeneration).
@@ -1831,7 +1813,7 @@ function scheduleZoomExposureRecalibration() {
     function calibrateNext() {
       if (i >= layers.length) return;
       const layer = layers[i++];
-      if (autoExposureEnabled) autoExposeLayer(layer); else calibrateGradientExposure(layer);
+      calibrateGradientExposure(layer);
       setTimeout(calibrateNext, 0);
     }
     calibrateNext();
@@ -1892,24 +1874,11 @@ map.on('zoomend', () => {
 // the viewport — see revealPannedPolygonArea. This also fires right after zoomend
 // (a zoom changes the map center too), but by then _lastFillBounds/_lastFillZoom
 // were just set to match the current viewport exactly, so it's a harmless no-op then.
-//
-// With Auto Exposure on, recalibrating only on zoom (see performZoomRegeneration)
-// left it stuck at whatever the viewport looked like at the last zoom change: pan
-// from a hot spot into a much dimmer area of the same layer without zooming and
-// the color range stayed calibrated to the hot spot, so the dim area still looked
-// dim instead of getting its own local 0–peak stretched to the full color range.
-// autoExposeLayer's scan (see layerScreenRect) already only reads pixels within
-// the current viewport, so simply re-running it here makes exposure track
-// whatever's actually on screen as you pan, not just at zoom boundaries.
-// Debounced the same way as zoom regeneration — panning can fire several moveend
-// events in a row, and each recalibration is a 9-13 step binary search.
-let panExposureTimer = null;
 // Restores full fill density after PAN_FILL_BUDGET's cheap interactive reveal (see
 // revealPannedPolygonArea) — fires once panning actually pauses, not on every
-// intermediate drag tick, same debounce shape as panExposureTimer below. Doing a
-// full regenerateLayerShapes here (rather than re-deriving just the shapes that
-// were capped) is simplest and cheap in this position: it only runs once per pan
-// gesture, not once per moveend tick.
+// intermediate drag tick. Doing a full regenerateLayerShapes here (rather than
+// re-deriving just the shapes that were capped) is simplest and cheap in this
+// position: it only runs once per pan gesture, not once per moveend tick.
 let panFillSettleTimer = null;
 map.on('moveend', () => {
   layers.forEach(layer => { revealPannedPolygonArea(layer); revealPannedStrokes(layer); });
@@ -1918,16 +1887,6 @@ map.on('moveend', () => {
     panFillSettleTimer = null;
     layers.forEach(regenerateLayerShapes);
   }, PAN_FILL_SETTLE_MS);
-  if (!autoExposureEnabled) return;
-  if (panExposureTimer) clearTimeout(panExposureTimer);
-  panExposureTimer = setTimeout(() => {
-    panExposureTimer = null;
-    // See the matching call in scheduleZoomExposureRecalibration — this timer
-    // can equally end up racing a rapid zoom burst's separately-debounced
-    // regeneration, so re-sync defensively here too before measuring.
-    layers.forEach(regenerateLayerShapes);
-    layers.forEach(autoExposeLayer);
-  }, 150);
 });
 
 function getLayer(id) { return layers.find(l => l.id === id); }
@@ -2508,9 +2467,7 @@ brushRadius.addEventListener('change', () => {
 });
 // Same underlying value as the layer Settings panel's "Max" slider (layer.maxIntensity)
 // — surfaced here too so a ceiling on paint buildup is adjustable without leaving the
-// paint tool. Auto Exposure, if on, still overrides this at render time the same way
-// it already overrides the Settings panel's Max (see zoomScaledOptions) — this just
-// sets the manual baseline it falls back to when Auto Exposure is off.
+// paint tool.
 brushMaxIntensity.addEventListener('pointerdown', () => pushUndoSnapshot());
 brushMaxIntensity.addEventListener('input', () => {
   const val = (+brushMaxIntensity.value) / 100;
@@ -3646,8 +3603,6 @@ function openPolygonEditPopup(layer, record, latlng) {
           p[2] = applyHeatGamma(overridden !== null ? overridden : multiAxisGradientIntensity(p[0], p[1], axes)) / normFactor;
         });
         refreshHeatLayer(layer);
-        // autoExposeLayer only applies if the global toggle is on — but a Start/End
-        // edit needs to be visible regardless of that (see calibrateGradientExposure).
         scheduleGradientExposureCalibration(layer);
       }
 
@@ -3775,7 +3730,7 @@ function deletePolygonRecord(layer, record) {
 }
 
 // Layers each calibrate their own exposure (max intensity) independently — see
-// autoExposeLayer/calibrateGradientExposure — so two shapes on DIFFERENT layers
+// calibrateGradientExposure — so two shapes on DIFFERENT layers
 // can never blend seamlessly even with matching intended intensity values: each
 // layer maps its own 0-1 range through its own independently-chosen max, so the
 // same 0.5 can render as a completely different color/brightness on each one. This
@@ -3969,7 +3924,7 @@ function zoomOverlapCorrection(layer) {
   return effectiveBlobSizePx(layer) / unclamped;
 }
 
-// Auto Exposure (see autoExposeLayer) calibrates the overall render ceiling, but even
+// calibrateGradientExposure calibrates the overall render ceiling, but even
 // with a perfectly-chosen ceiling, a dense fill's rendered color still doesn't track
 // intended intensity linearly: leaflet-heat draws one soft circle per merged bin and
 // overlapping circles COMPOSITE via canvas alpha blending — `1-(1-a)^n` for n
@@ -5263,8 +5218,7 @@ document.getElementById('fileImport').addEventListener('change', async (e) => {
       failures.push(`${file.name}: ${err.message}`);
     }
   }
-  // calibrateGradientExposure, not autoExposeLayer — a layer exported before
-  // ever being calibrated (see finishCurrentStroke et al.) carries its
+  // A layer exported before ever being calibrated (see finishCurrentStroke et al.) carries its
   // uncalibrated maxIntensity straight through the round-trip otherwise, so
   // re-importing it would reproduce the exact same near-invisible render.
   layers.forEach(calibrateGradientExposure);
