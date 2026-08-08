@@ -10,6 +10,13 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<!-- Warms up the DNS/TLS handshake for tile hosts before the map ever requests
+     a tile from them — shaves that round-trip off the very first fetch to
+     each host instead of paying it lazily on demand. -->
+<link rel="preconnect" href="https://mt0.google.com">
+<link rel="preconnect" href="https://mt1.google.com">
+<link rel="preconnect" href="https://server.arcgisonline.com">
+<link rel="preconnect" href="https://s3.amazonaws.com">
 <script>
 // Applied synchronously, before the stylesheet below paints anything, so a saved
 // light-theme preference doesn't show a flash of the dark default first.
@@ -49,6 +56,7 @@
   .sidebar-header{padding:16px 18px 12px;border-bottom:1px solid var(--border);}
   .sidebar-header h1{font-size:14.5px;margin:0 0 2px;font-weight:700;letter-spacing:.01em;}
   .sidebar-header p{font-size:11px;color:var(--sub);margin:0;}
+  .view-mode-row{display:flex;gap:6px;padding:10px 12px;border-bottom:1px solid var(--border);}
   .credit-block{
     display:flex;flex-direction:column;gap:6px;align-items:flex-end;
     padding:12px 14px;margin-top:auto;border-top:1px solid var(--border);
@@ -262,6 +270,31 @@
 
   .ruler-tooltip{background:var(--panel);color:var(--text);border:1px solid var(--border);font-size:10.5px;padding:1px 5px;}
   .search-pin-icon{background:none;border:none;}
+
+  /* ---- Mobile layout ----
+     #sidebar leaves the normal flex flow entirely (position:fixed) so #map
+     (flex:1) fills the full screen behind it, and the sidebar itself becomes a
+     bottom drawer — collapsed to just its header by default, tap to expand.
+     Gated by the [data-device] attribute (see DeviceControl/applyDeviceMode),
+     not a @media breakpoint — a real phone auto-detects into this on load, but
+     it stays exactly this way regardless of viewport width once picked. */
+  :root[data-device="mobile"] #sidebar{
+    position:fixed; left:0; right:0; bottom:0; top:auto; width:100%; min-width:0;
+    max-height:75vh; border-left:none; border-top:1px solid var(--border);
+    border-radius:14px 14px 0 0; box-shadow:0 -6px 24px #0008;
+    transform:translateY(calc(100% - 56px)); transition:transform .25s ease;
+    z-index:1300;
+  }
+  :root[data-device="mobile"] #sidebar.expanded{ transform:translateY(0); }
+  :root[data-device="mobile"] .sidebar-header{ cursor:pointer; position:relative; padding-right:40px; }
+  :root[data-device="mobile"] .sidebar-header::after{
+    content:''; position:absolute; right:18px; top:50%; width:28px; height:3px;
+    background:var(--sub); border-radius:2px; transform:translateY(-50%);
+  }
+  :root[data-device="mobile"] #searchBox{ width:calc(100vw - 28px); }
+  :root[data-device="mobile"] .basemap-toggle-btn{ width:42px; height:42px; }
+  :root[data-device="mobile"] button{ padding:9px 12px; font-size:13px; min-height:38px; }
+  :root[data-device="mobile"] button.small{ padding:7px 10px; min-height:32px; }
 </style>
 </head>
 <body>
@@ -271,6 +304,11 @@
     <div class="sidebar-header">
       <h1>Heatmap Layer Studio</h1>
       <p>Paint, manage layers &amp; palettes</p>
+    </div>
+
+    <div class="view-mode-row">
+      <button id="btnViewHeatmap" class="small active-toggle" style="flex:1;" title="Render the point-based heatmap (the normal editing view)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21c3.8 0 6.2-2.5 6.2-6 0-3.8-3-5.8-4-9.3-.9 1.8-1 3.6-2.6 3.6-.9 0-1-1.6-1-1.6-2 2-3.6 4.6-3.6 7.3 0 3.5 2.2 6 5 6z"/></svg> Heatmap</button>
+      <button id="btnViewPolygons" class="small" style="flex:1;" title="Hide the heatmap and show the Russian-controlled / gray zone territory polygons instead"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-9 4 5 3-4 6 8H3z"/></svg> Polygons</button>
     </div>
 
     <div id="paintBar">
@@ -656,29 +694,39 @@ const map = L.map('map', { center: CENTER, zoom: ZOOM, zoomControl: false, prefe
 map.createPane('polygonPane');
 map.getPane('polygonPane').style.zIndex = 450;
 
+// Merged into every tile layer below (basemaps and the terrain layer alike).
+// keepBuffer above Leaflet's default of 2 keeps more already-loaded tiles
+// around outside the current viewport, so panning back over recently-seen
+// ground reuses them instead of re-fetching. updateWhenZooming:false stops
+// Leaflet from firing a tile request for every INTERMEDIATE zoom level a
+// scroll/pinch gesture passes through — those tiles get thrown away the
+// instant the gesture continues, so fetching them was pure wasted bandwidth
+// competing with the request for the level you actually land on.
+const FAST_TILE_OPTS = { keepBuffer: 4, updateWhenZooming: false };
+
 const basemaps = {
   google: L.tileLayer('https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
-    subdomains: ['mt0','mt1','mt2','mt3'], maxZoom: 20, attribution: 'Google Satellite'
+    subdomains: ['mt0','mt1','mt2','mt3'], maxZoom: 20, attribution: 'Google Satellite', ...FAST_TILE_OPTS
   }),
   ghybrid: L.tileLayer('https://{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
-    subdomains: ['mt0','mt1','mt2','mt3'], maxZoom: 20, attribution: 'Google Hybrid'
+    subdomains: ['mt0','mt1','mt2','mt3'], maxZoom: 20, attribution: 'Google Hybrid', ...FAST_TILE_OPTS
   }),
   osm: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    subdomains: ['a','b','c'], maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+    subdomains: ['a','b','c'], maxZoom: 19, attribution: '&copy; OpenStreetMap contributors', ...FAST_TILE_OPTS
   }),
   esri: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 19, attribution: 'Esri World Imagery'
+    maxZoom: 19, attribution: 'Esri World Imagery', ...FAST_TILE_OPTS
   }),
   esriDarkGray: L.layerGroup([
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
-      maxZoom: 16, attribution: 'Esri Dark Gray Canvas'
+      maxZoom: 16, attribution: 'Esri Dark Gray Canvas', ...FAST_TILE_OPTS
     }),
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', {
-      maxZoom: 16
+      maxZoom: 16, ...FAST_TILE_OPTS
     })
   ]),
   esriTopo: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 19, attribution: 'Esri World Topo Map'
+    maxZoom: 19, attribution: 'Esri World Topo Map', ...FAST_TILE_OPTS
   })
 };
 const basemapLabels = { google:'Google Satellite', ghybrid:'Google Hybrid', osm:'OpenStreetMap', esri:'Esri Imagery', esriDarkGray:'Esri Dark Gray', esriTopo:'Esri Topographic' };
@@ -712,6 +760,33 @@ const BasemapControl = L.Control.extend({
   }
 });
 map.addControl(new BasemapControl());
+
+/* ---------------- User preferences (persisted) ----------------
+   One JSON blob in localStorage for small standing choices (view mode, device
+   mode, ...) — new preferences just read/write a key here instead of each
+   growing its own ad-hoc localStorage entry. Theme/basemap/terrain-mode/FIRMS-key
+   predate this and keep their own dedicated keys (changing their format isn't
+   worth the risk for this round), but everything new goes through this. */
+const PREFS_STORAGE_KEY = 'heatmapMapPrefs_v1';
+let _prefsCache = null;
+function loadPrefs() {
+  if (_prefsCache) return _prefsCache;
+  try {
+    _prefsCache = JSON.parse(localStorage.getItem(PREFS_STORAGE_KEY)) || {};
+  } catch (e) {
+    _prefsCache = {};
+  }
+  return _prefsCache;
+}
+function getPref(key, fallback) {
+  const prefs = loadPrefs();
+  return Object.prototype.hasOwnProperty.call(prefs, key) ? prefs[key] : fallback;
+}
+function setPref(key, value) {
+  const prefs = loadPrefs();
+  prefs[key] = value;
+  try { localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(prefs)); } catch (e) {}
+}
 
 /* ---------------- Light/dark theme toggle ----------------
    The actual THEME SWITCH already happened before first paint (see the inline
@@ -750,6 +825,58 @@ const ThemeControl = L.Control.extend({
   }
 });
 map.addControl(new ThemeControl());
+
+/* ---------------- Mobile / desktop layout toggle ----------------
+   Defaults to auto-detecting the actual device (a real phone gets the mobile
+   layout with nobody touching anything) via navigator.userAgentData where
+   available, falling back to UA sniffing + a coarse-pointer media check — but
+   once the user manually picks one, that choice is saved and always wins over
+   auto-detection from then on, on this browser. */
+function detectDevice() {
+  if (navigator.userAgentData && typeof navigator.userAgentData.mobile === 'boolean') {
+    return navigator.userAgentData.mobile ? 'mobile' : 'desktop';
+  }
+  const uaMobile = /Android|iPhone|iPad|iPod|Mobile|Windows Phone/i.test(navigator.userAgent);
+  const coarsePointer = window.matchMedia && window.matchMedia('(pointer:coarse)').matches;
+  return (uaMobile || coarsePointer) ? 'mobile' : 'desktop';
+}
+function applyDeviceMode(mode) {
+  document.documentElement.setAttribute('data-device', mode === 'mobile' ? 'mobile' : 'desktop');
+}
+const MOBILE_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/></svg>';
+const DESKTOP_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="13" rx="1.5"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>';
+const DeviceControl = L.Control.extend({
+  options: { position: 'topright' },
+  onAdd: function() {
+    const btn = L.DomUtil.create('div', 'basemap-toggle-btn');
+    // Same convention as ThemeControl: show the icon for the mode a click
+    // would switch TO, not the current one.
+    const render = () => {
+      const mode = document.documentElement.getAttribute('data-device') === 'mobile' ? 'mobile' : 'desktop';
+      btn.innerHTML = mode === 'mobile' ? DESKTOP_ICON_SVG : MOBILE_ICON_SVG;
+      btn.title = mode === 'mobile' ? 'Switch to desktop layout' : 'Switch to mobile layout';
+    };
+    render();
+    L.DomEvent.on(btn, 'click', L.DomEvent.stop);
+    L.DomEvent.on(btn, 'click', () => {
+      const current = document.documentElement.getAttribute('data-device') === 'mobile' ? 'mobile' : 'desktop';
+      const next = current === 'mobile' ? 'desktop' : 'mobile';
+      applyDeviceMode(next);
+      setPref('deviceMode', next);
+      render();
+    });
+    L.DomEvent.disableClickPropagation(btn);
+    return btn;
+  }
+});
+map.addControl(new DeviceControl());
+applyDeviceMode(getPref('deviceMode', null) || detectDevice());
+// Tapping the sidebar's header expands/collapses it — only visually meaningful
+// in the mobile layout (see the [data-device="mobile"] CSS), harmless no-op
+// otherwise.
+document.querySelector('.sidebar-header').addEventListener('click', () => {
+  document.getElementById('sidebar').classList.toggle('expanded');
+});
 
 function setBasemap(key) {
   if (key === currentBasemapKey) return;
@@ -962,7 +1089,7 @@ function updateElevLegend(min, max) {
 function toggleTerrainOverlay(enabled) {
   if (enabled) {
     if (!topoTileLayer) {
-      topoTileLayer = new HypsometricLayer({ opacity: 0.85, maxZoom: 15, attribution: 'Elevation: AWS Terrain Tiles' });
+      topoTileLayer = new HypsometricLayer({ opacity: 0.85, maxZoom: 15, attribution: 'Elevation: AWS Terrain Tiles', ...FAST_TILE_OPTS });
     }
     topoTileLayer.addTo(map);
     topoTileLayer.bringToFront();
@@ -1035,7 +1162,11 @@ async function toggleFirmsOverlay(enabled) {
   if (!key) {
     status('Enter a FIRMS map key first');
     document.getElementById('chkFirms').checked = false;
-    document.getElementById('firmsOpts').style.display = 'none';
+    // Deliberately NOT re-hiding firmsOpts here (unlike the checkbox's own
+    // change handler, which shows it on check) — this used to hide it again
+    // immediately, so the key input flashed and vanished before you could
+    // even click into it. Leaving it open lets you actually type a key in and
+    // re-check the box, instead of it reading as the toggle "doing nothing."
     return;
   }
   try { localStorage.setItem(FIRMS_KEY_STORAGE_KEY, key); } catch (e) {}
@@ -1073,7 +1204,9 @@ async function toggleFirmsOverlay(enabled) {
   if (failures === sources.length) {
     status(firstError instanceof TypeError ? 'FIRMS blocked by CORS — needs a proxy' : `FIRMS error: ${firstError?.message ?? 'unknown'}`);
     document.getElementById('chkFirms').checked = false;
-    document.getElementById('firmsOpts').style.display = 'none';
+    // See the missing-key branch above for why firmsOpts stays open — the
+    // error message and key field both need to stay visible so the user can
+    // actually see what went wrong and fix it (e.g. a typo'd key).
     return;
   }
 
@@ -5424,17 +5557,92 @@ FORT_CHECKBOXES.wire.addEventListener('change', () => setFortificationVisible('w
 let heatmapMasterVisible = true;
 function applyHeatmapMasterVisibility() {
   layers.forEach(layer => {
-    if (!layer.heatLayer) return;
     const shouldShow = layer.visible && heatmapMasterVisible;
-    const isShown = map.hasLayer(layer.heatLayer);
-    if (shouldShow && !isShown) layer.heatLayer.addTo(map);
-    if (!shouldShow && isShown) map.removeLayer(layer.heatLayer);
+    if (layer.heatLayer) {
+      const isShown = map.hasLayer(layer.heatLayer);
+      if (shouldShow && !isShown) layer.heatLayer.addTo(map);
+      if (!shouldShow && isShown) map.removeLayer(layer.heatLayer);
+    }
+    // Baked polygon fills (see bakePolygon) render as their own independent
+    // image overlays, not through layer.heatLayer — without this they'd stay
+    // visible even with the heatmap master switched off.
+    layer.polygons.forEach(rec => {
+      if (!rec._bakedOverlay) return;
+      const isShown = map.hasLayer(rec._bakedOverlay);
+      if (shouldShow && !isShown) rec._bakedOverlay.addTo(map);
+      if (!shouldShow && isShown) map.removeLayer(rec._bakedOverlay);
+    });
   });
 }
 document.getElementById('chkHeatmapMaster').addEventListener('change', (e) => {
   heatmapMasterVisible = e.target.checked;
   applyHeatmapMasterVisibility();
 });
+
+/* ---------------- Territory control zones (Russia / gray zone) ----------------
+   Same lazy-load-on-first-enable pattern as FORTIFICATIONS above, just with a
+   fill color as well as an outline, and no per-zone checkboxes — these two are
+   shown/hidden together, driven entirely by the Heatmap/Polygons view mode
+   toggle below rather than the Overlays panel. */
+const CONTROL_ZONES = {
+  russia:   { file: 'russia.geojson',   fillColor: '#ca0000', outlineColor: '#ff0000', pane: 'controlZonePane', zIndex: 420, group: null, loading: false, visible: false },
+  grayzone: { file: 'grayzone.geojson', fillColor: '#c3c3c3', outlineColor: '#b4b4b4', pane: 'controlZonePane', zIndex: 421, group: null, loading: false, visible: false }
+};
+map.createPane('controlZonePane');
+map.getPane('controlZonePane').style.zIndex = 420;
+const controlZoneRenderer = L.canvas({ pane: 'controlZonePane' });
+
+function setControlZoneVisible(key, visible) {
+  const zone = CONTROL_ZONES[key];
+  zone.visible = visible;
+  if (!visible) { if (zone.group) map.removeLayer(zone.group); return; }
+  if (zone.group) { zone.group.addTo(map); return; }
+  if (zone.loading) return;
+  zone.loading = true;
+  fetch(zone.file)
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(geo => {
+      zone.group = L.geoJSON(geo, {
+        pane: 'controlZonePane',
+        renderer: controlZoneRenderer,
+        interactive: false,
+        style: { color: zone.outlineColor, weight: 1.5, opacity: 0.9, fillColor: zone.fillColor, fillOpacity: 0.45, smoothFactor: 1.5 }
+      });
+      zone.loading = false;
+      if (zone.visible) zone.group.addTo(map);
+    })
+    .catch(err => {
+      zone.loading = false;
+      zone.visible = false;
+      // Quiet by design (unlike fortifications' alert()) — this fires the
+      // instant Polygons mode is picked, every session, until the user
+      // actually places russia.geojson/grayzone.geojson next to this page. An
+      // alert on every load would be far more annoying than a missing layer.
+      console.warn(`Couldn't load ${zone.file}: ${err.message}`);
+    });
+}
+
+/* ---------------- Heatmap / Polygons view mode ----------------
+   A bigger switch than any individual Overlays checkbox: Polygons mode hides
+   every heat layer (reusing heatmapMasterVisible, kept in sync with its own
+   Overlays checkbox) and shows the two control zones above instead. Painting/
+   editing tools stay fully functional in either mode — this only changes what
+   renders, not what you can do. */
+const btnViewHeatmap = document.getElementById('btnViewHeatmap');
+const btnViewPolygons = document.getElementById('btnViewPolygons');
+function applyViewMode(mode, skipSave) {
+  btnViewHeatmap.classList.toggle('active-toggle', mode === 'heatmap');
+  btnViewPolygons.classList.toggle('active-toggle', mode === 'polygons');
+  heatmapMasterVisible = mode === 'heatmap';
+  document.getElementById('chkHeatmapMaster').checked = heatmapMasterVisible;
+  applyHeatmapMasterVisibility();
+  setControlZoneVisible('russia', mode === 'polygons');
+  setControlZoneVisible('grayzone', mode === 'polygons');
+  if (!skipSave) setPref('viewMode', mode);
+}
+btnViewHeatmap.addEventListener('click', () => applyViewMode('heatmap'));
+btnViewPolygons.addEventListener('click', () => applyViewMode('polygons'));
+applyViewMode(getPref('viewMode', 'heatmap'), true);
 
 /* ---------------- Right-click coordinates + share link ---------------- */
 const COPY_ICON_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>';
