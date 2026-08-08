@@ -23,6 +23,28 @@
     if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
   } catch (e) {}
 })();
+// See heatmap-map.html's own copy of this for the full rationale — must run
+// before Leaflet measures its container (L.map(...) below), or the mobile
+// layout's width change (sidebar becomes a fixed drawer instead of a flex
+// sibling) goes unnoticed and every heat-layer canvas gets permanently
+// created at the wrong, stale size.
+(function() {
+  try {
+    var prefs = JSON.parse(localStorage.getItem('heatmapViewerPrefs_v1')) || {};
+    var device = prefs.deviceMode;
+    if (!device) {
+      // Any one signal saying mobile is enough — not "prefer userAgentData,
+      // else fall back" — so a single flaky/unavailable/not-yet-updated
+      // signal can't produce a false "desktop" read on a real phone.
+      var mobile = false;
+      if (navigator.userAgentData && navigator.userAgentData.mobile === true) mobile = true;
+      if (/Android|iPhone|iPad|iPod|Mobile|Windows Phone/i.test(navigator.userAgent)) mobile = true;
+      if (window.matchMedia && window.matchMedia('(pointer:coarse)').matches) mobile = true;
+      device = mobile ? 'mobile' : 'desktop';
+    }
+    document.documentElement.setAttribute('data-device', device === 'mobile' ? 'mobile' : 'desktop');
+  } catch (e) {}
+})();
 </script>
 <style>
   :root{
@@ -40,7 +62,10 @@
   }
   *{box-sizing:border-box;}
   html,body{height:100%;margin:0;font-family:'Inter',-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;}
-  #app{display:flex;height:100vh;width:100vw;overflow:hidden;}
+  /* See heatmap-map.html's own copy of this for the full rationale — dvh
+     accounts for a mobile browser's dynamic toolbar; plain vh overshoots the
+     actually-visible area on most mobile browsers. */
+  #app{display:flex;height:100vh;height:100dvh;width:100vw;overflow:hidden;}
   #map{flex:1;height:100%;background:var(--bg);}
   #sidebar{
     width:300px;min-width:300px;background:var(--panel);border-left:1px solid var(--border);
@@ -179,7 +204,7 @@
 
   /* ---- Floating draw toolbar (local scratchpad — never published) ---- */
   #drawToolbar{
-    position:fixed;top:64px;left:calc(50% - 150px);transform:translateX(-50%);z-index:1200;display:none;
+    position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:1200;display:none;
     background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 4px 14px #0007;
     padding:8px;gap:8px;flex-direction:column;
   }
@@ -194,7 +219,7 @@
 
   /* ---- Floating ruler panel ---- */
   #rulerPanel{
-    position:fixed;top:64px;left:calc(50% - 150px);transform:translateX(-50%);z-index:1200;display:none;
+    position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:1200;display:none;
     background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 4px 14px #0007;
     padding:9px 12px;font-size:12.5px;gap:8px;align-items:center;
   }
@@ -214,7 +239,7 @@
   /* ---- Mobile layout ---- (see heatmap-map.html's own copy for the rationale) */
   :root[data-device="mobile"] #sidebar{
     position:fixed; left:0; right:0; bottom:0; top:auto; width:100%; min-width:0;
-    max-height:75vh; border-left:none; border-top:1px solid var(--border);
+    max-height:75vh; max-height:75dvh; border-left:none; border-top:1px solid var(--border);
     border-radius:14px 14px 0 0; box-shadow:0 -6px 24px #0008;
     transform:translateY(calc(100% - 56px)); transition:transform .25s ease;
     z-index:1300;
@@ -225,7 +250,8 @@
     content:''; position:absolute; right:18px; top:50%; width:28px; height:3px;
     background:var(--sub); border-radius:2px; transform:translateY(-50%);
   }
-  :root[data-device="mobile"] #searchBox{ width:calc(100vw - 28px); }
+  /* Leaves clearance on the right for the stacked topright icon controls. */
+  :root[data-device="mobile"] #searchBox{ width:calc(100vw - 150px); }
   :root[data-device="mobile"] .basemap-toggle-btn{ width:42px; height:42px; }
   :root[data-device="mobile"] button{ padding:9px 12px; font-size:13px; min-height:38px; }
   :root[data-device="mobile"] button.small{ padding:7px 10px; min-height:32px; }
@@ -654,18 +680,22 @@ map.addControl(new ThemeControl());
    rationale — auto-detects the real device by default, manual pick always
    wins once made. */
 function detectDevice() {
-  if (navigator.userAgentData && typeof navigator.userAgentData.mobile === 'boolean') {
-    return navigator.userAgentData.mobile ? 'mobile' : 'desktop';
-  }
-  const uaMobile = /Android|iPhone|iPad|iPod|Mobile|Windows Phone/i.test(navigator.userAgent);
-  const coarsePointer = window.matchMedia && window.matchMedia('(pointer:coarse)').matches;
-  return (uaMobile || coarsePointer) ? 'mobile' : 'desktop';
+  let mobile = false;
+  if (navigator.userAgentData && navigator.userAgentData.mobile === true) mobile = true;
+  if (/Android|iPhone|iPad|iPod|Mobile|Windows Phone/i.test(navigator.userAgent)) mobile = true;
+  if (window.matchMedia && window.matchMedia('(pointer:coarse)').matches) mobile = true;
+  return mobile ? 'mobile' : 'desktop';
 }
 function applyDeviceMode(mode) {
   document.documentElement.setAttribute('data-device', mode === 'mobile' ? 'mobile' : 'desktop');
+  // See heatmap-map.html's own copy of this for the full rationale — a
+  // runtime toggle changes the container's actual size via CSS, and Leaflet
+  // never notices a CSS-only resize without being told.
+  map.invalidateSize();
 }
 const MOBILE_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2" width="10" height="20" rx="2"/><line x1="11" y1="18" x2="13" y2="18"/></svg>';
 const DESKTOP_ICON_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="13" rx="1.5"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>';
+let renderDeviceControlBtn = null;
 const DeviceControl = L.Control.extend({
   options: { position: 'topright' },
   onAdd: function() {
@@ -676,6 +706,7 @@ const DeviceControl = L.Control.extend({
       btn.title = mode === 'mobile' ? 'Switch to desktop layout' : 'Switch to mobile layout';
     };
     render();
+    renderDeviceControlBtn = render;
     L.DomEvent.on(btn, 'click', L.DomEvent.stop);
     L.DomEvent.on(btn, 'click', () => {
       const current = document.documentElement.getAttribute('data-device') === 'mobile' ? 'mobile' : 'desktop';
@@ -690,6 +721,16 @@ const DeviceControl = L.Control.extend({
 });
 map.addControl(new DeviceControl());
 applyDeviceMode(getPref('deviceMode', null) || detectDevice());
+// See heatmap-map.html's own copy of this for the full rationale.
+setTimeout(() => {
+  if (getPref('deviceMode', null) !== null) return;
+  const redetected = detectDevice();
+  const current = document.documentElement.getAttribute('data-device') === 'mobile' ? 'mobile' : 'desktop';
+  if (redetected !== current) {
+    applyDeviceMode(redetected);
+    if (renderDeviceControlBtn) renderDeviceControlBtn();
+  }
+}, 400);
 document.querySelector('.sidebar-header').addEventListener('click', () => {
   document.getElementById('sidebar').classList.toggle('expanded');
 });
