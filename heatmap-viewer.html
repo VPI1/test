@@ -1195,8 +1195,8 @@ function toggleLayerVisibility(id) {
   layer.visible = !layer.visible;
   if (layer.visible && heatmapMasterVisible) { layer.heatLayer.addTo(map); applyCanvasBlur(layer); } else { map.removeLayer(layer.heatLayer); }
   layer.polygons.forEach(rec => {
-    if (!rec.outline) return;
-    if (layer.visible) rec.outline.addTo(map); else map.removeLayer(rec.outline);
+    if (rec.outline) { if (layer.visible) rec.outline.addTo(map); else map.removeLayer(rec.outline); }
+    if (rec._bakedOverlay) { if (layer.visible) rec._bakedOverlay.addTo(map); else map.removeLayer(rec._bakedOverlay); }
   });
   if (layer.visible) regenerateLayerShapes(layer);
   renderLayerList();
@@ -1460,9 +1460,16 @@ function intersectBounds(a, b) {
   return L.latLngBounds([south, west], [north, east]);
 }
 
-function fillPolygonWithHeat(layer, verts, intensityFn, fillFraction, polygonId, eraseMarks, intensityOverrides, boostMarks, maxSamplesOverride) {
+// outPoints/forceBounds mirror the editor's own fillPolygonWithHeat (see
+// heatmap-map.html for the full rationale) — used by bakePolygon to capture a
+// polygon's full-extent fill into its own baked image instead of the shared
+// layer.points array.
+let lastFillClippedBounds = null;
+
+function fillPolygonWithHeat(layer, verts, intensityFn, fillFraction, polygonId, eraseMarks, intensityOverrides, boostMarks, maxSamplesOverride, outPoints, forceBounds) {
   const fullBounds = L.latLngBounds(verts);
-  const clipped = viewportClippedBounds(fullBounds);
+  const clipped = forceBounds || viewportClippedBounds(fullBounds);
+  lastFillClippedBounds = clipped;
   if (!clipped) return 0;
   const south = clipped.getSouth(), north = clipped.getNorth(), west = clipped.getWest(), east = clipped.getEast();
   const centerLat = (south + north) / 2;
@@ -1496,11 +1503,16 @@ function fillPolygonWithHeat(layer, verts, intensityFn, fillFraction, polygonId,
     const overridden = overrideIntensityAt(jLat, jLng, intensityOverrides);
     const raw = overridden !== null ? overridden : intensityFn(gLat, gLng);
     const boosted = Math.min(1, raw * (1 + boostFactorAt(jLat, jLng, boostMarks)));
-    layer.points.push([jLat, jLng, applyHeatGamma(boosted) / normFactor]);
-    layer.pointOwners.push(polygonId);
+    const weight = applyHeatGamma(boosted) / normFactor;
+    if (outPoints) {
+      outPoints.push([jLat, jLng, weight]);
+    } else {
+      layer.points.push([jLat, jLng, weight]);
+      layer.pointOwners.push(polygonId);
+    }
   });
   const added = candidates.length;
-  if (added > 0) refreshHeatLayer(layer);
+  if (added > 0 && !outPoints) refreshHeatLayer(layer);
   return added;
 }
 
@@ -1564,19 +1576,116 @@ function appendStrokePoints(layer, strokeRecord) {
   });
 }
 
-function appendPolygonPoints(layer, rec, maxSamplesOverride) {
+// Reproduces L.HeatLayer.prototype._redraw's own screen-space bin-merging
+// against an arbitrary canvas origin/size instead of the live map pane, so a
+// baked polygon's own canvas renders identically to how the same points would
+// look through the shared layer. See heatmap-map.html's own copy of this
+// (kept in sync) for the full rationale.
+function renderHeatCanvasFromPoints(layer, points, originPt, width, height, zoom) {
+  const opts = zoomScaledOptions(layer);
+  const r = opts.radius + opts.blur;
+  const g = r / 2;
+  const maxOpt = opts.max === undefined ? 1 : opts.max;
+  const cellMap = new Map();
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    const pt = map.project(L.latLng(p[0], p[1]), zoom);
+    const x = pt.x - originPt.x, y = pt.y - originPt.y;
+    if (x < -r || y < -r || x > width + r || y > height + r) continue;
+    const weight = p[2];
+    const key = (Math.floor(y / g) + 2) + '_' + (Math.floor(x / g) + 2);
+    const existing = cellMap.get(key);
+    if (existing) {
+      existing[0] = (existing[0] * existing[2] + x * weight) / (existing[2] + weight);
+      existing[1] = (existing[1] * existing[2] + y * weight) / (existing[2] + weight);
+      existing[2] += weight;
+    } else {
+      cellMap.set(key, [x, y, weight]);
+    }
+  }
+  const heatData = [];
+  cellMap.forEach(b => heatData.push([Math.round(b[0]), Math.round(b[1]), Math.min(b[2], maxOpt)]));
+  const canvas = document.createElement('canvas');
+  canvas.width = width; canvas.height = height;
+  const heat = simpleheat(canvas);
+  heat.radius(opts.radius, opts.blur);
+  heat.gradient(opts.gradient);
+  heat.max(maxOpt);
+  heat.data(heatData).draw();
+  return canvas;
+}
+
+function unbakePolygonOverlay(rec) {
+  if (rec._bakedOverlay) { map.removeLayer(rec._bakedOverlay); rec._bakedOverlay = null; }
+  rec._baked = false;
+  rec._bakedPoints = null;
+}
+
+// Bakes a polygon/gradient zone's fill once into its own independent static
+// image pinned to the shape's own lat/lng bounds, instead of it living as
+// points inside the shared layer.points array that L.heatLayer redraws in
+// full on ANY change anywhere in the layer. See heatmap-map.html's own copy
+// of this (kept in sync) for the full rationale — this viewer has no editing
+// tools, so there's no unbake-for-editing path needed here, just the bake
+// itself plus the same size-cap fallback to the classic viewport-clipped fill.
+const BAKE_MAX_CANVAS_DIM = 1200;
+
+function bakePolygon(layer, rec, maxSamplesOverride) {
+  if (!layer.visible) return null;
   const vertsLL = rec.vertices.map(v => L.latLng(v[0], v[1]));
+  const fullBounds = L.latLngBounds(vertsLL);
+  if (!viewportClippedBounds(fullBounds)) return rec._baked ? 0 : null;
+
+  const zoom = map.getZoom();
+  const nw = map.project(fullBounds.getNorthWest(), zoom);
+  const se = map.project(fullBounds.getSouthEast(), zoom);
+  const width = Math.ceil(se.x - nw.x), height = Math.ceil(se.y - nw.y);
+  if (width <= 0 || height <= 0 || width > BAKE_MAX_CANVAS_DIM || height > BAKE_MAX_CANVAS_DIM) return null;
+
+  const outPoints = [];
+  let added;
   if (rec.isGradient) {
     const axes = ensureGradientAxes(rec);
-    fillPolygonWithHeat(
+    added = fillPolygonWithHeat(layer, vertsLL, (lat, lng) => multiAxisGradientIntensity(lat, lng, axes), rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks, maxSamplesOverride, outPoints, fullBounds);
+  } else {
+    added = fillPolygonWithHeat(layer, vertsLL, () => rec.intensity, rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks, maxSamplesOverride, outPoints, fullBounds);
+  }
+  rec._lastFillBounds = fullBounds;
+  rec._lastFillZoom = zoom;
+
+  if (!added) { unbakePolygonOverlay(rec); return 0; }
+
+  const canvas = renderHeatCanvasFromPoints(layer, outPoints, nw, width, height, zoom);
+  if (rec._bakedOverlay) map.removeLayer(rec._bakedOverlay);
+  const overlay = L.imageOverlay(canvas.toDataURL(), fullBounds, { opacity: 1, interactive: false });
+  overlay.addTo(map);
+  const img = overlay.getElement();
+  if (img) img.style.filter = `blur(${canvasBlurPxFor(layer)}px)`;
+  rec._bakedOverlay = overlay;
+  rec._bakedZoom = zoom;
+  rec._baked = true;
+  rec._bakedPoints = outPoints;
+  return added;
+}
+
+function appendPolygonPoints(layer, rec, maxSamplesOverride) {
+  const baked = bakePolygon(layer, rec, maxSamplesOverride);
+  if (baked !== null) return baked;
+
+  const vertsLL = rec.vertices.map(v => L.latLng(v[0], v[1]));
+  let added;
+  if (rec.isGradient) {
+    const axes = ensureGradientAxes(rec);
+    added = fillPolygonWithHeat(
       layer, vertsLL, (lat, lng) => multiAxisGradientIntensity(lat, lng, axes),
       rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks, maxSamplesOverride
     );
   } else {
-    fillPolygonWithHeat(layer, vertsLL, () => rec.intensity, rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks, maxSamplesOverride);
+    added = fillPolygonWithHeat(layer, vertsLL, () => rec.intensity, rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks, maxSamplesOverride);
   }
   rec._lastFillBounds = viewportClippedBounds(L.latLngBounds(vertsLL));
   rec._lastFillZoom = map.getZoom();
+  return added;
 }
 
 const LAYER_FILL_BUDGET = 120000;
@@ -1599,6 +1708,7 @@ function revealPannedPolygonArea(layer) {
   if (!layer.visible || !layer.polygons.length) return;
   const currentZoom = map.getZoom();
   const toRegen = layer.polygons.filter(rec => {
+    if (rec._baked) return false; // baked polygons already cover their full extent — see bakePolygon
     if (rec._lastFillZoom !== currentZoom) return true;
     const vertsLL = rec.vertices.map(v => L.latLng(v[0], v[1]));
     const clipped = viewportClippedBounds(L.latLngBounds(vertsLL));
@@ -1630,7 +1740,7 @@ function revealPannedStrokes(layer) {
 
 /* ---------------- Loading published data ---------------- */
 function loadHeatmapData(data) {
-  layers.forEach(l => { if (l.heatLayer) map.removeLayer(l.heatLayer); l.polygons.forEach(p => { if (p.outline) map.removeLayer(p.outline); }); });
+  layers.forEach(l => { if (l.heatLayer) map.removeLayer(l.heatLayer); l.polygons.forEach(p => { if (p.outline) map.removeLayer(p.outline); if (p._bakedOverlay) map.removeLayer(p._bakedOverlay); }); });
   layers = [];
   (data.layers || []).forEach(ld => {
     const layer = makeLayer(ld.name);
