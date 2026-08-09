@@ -74,16 +74,22 @@
      (modals, credit links, etc.) is untouched. */
   #map{
     flex:1;height:100%;background:var(--bg);-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;
-    transition:transform .4s ease;transform-origin:50% 65%;
+    transition:transform .4s ease;transform-origin:50% 65%;position:relative;z-index:0;
   }
   /* A CSS perspective tilt on the existing flat map, NOT real 3D terrain —
      that would need an actual 3D engine (Mapbox GL/CesiumJS/deck.gl), a
-     wholesale replacement of this whole Leaflet-based renderer. Panning/
-     zooming is paused while active (see toggle3DView) because a rotated
-     element's on-screen bounding box no longer lines up with Leaflet's own
-     flat click/drag math — trying to interact with the tilted view would
-     register clicks against the wrong underlying map location. */
-  #map.map-3d{transform:perspective(1400px) rotateX(55deg) scale(1.35);}
+     wholesale replacement of this whole Leaflet-based renderer. The actual
+     transform value is set in JS (see apply3DTransform) since the pitch/yaw
+     angles change live while orbiting — this class is just a cursor hint plus
+     a hook for the transition. Leaflet's OWN drag/zoom stay disabled the whole
+     time toggle3DView is on (a rotated element's on-screen bounding box no
+     longer lines up with Leaflet's own flat click math); panning/zooming/
+     orbiting instead go through map.panBy()/setZoom() directly, which only
+     need a raw delta or a target zoom, neither depending on where a click
+     lands on the tilted surface. z-index:0 (scoped to THIS rule, not the
+     default #map above) keeps the scaled-up tilted map from ever visually
+     sitting above #sidebar — see #sidebar's own z-index. */
+  #map.map-3d{cursor:grab;}
   .basemap-toggle-btn.active-toggle{background:var(--accent);color:#fff;}
   /* Leaflet's own scale control sits 5px closer to the edge than the
      .legend-control boxes stacked above it in the same bottom-left corner —
@@ -97,6 +103,7 @@
     width:300px;min-width:300px;background:var(--panel);border-left:1px solid var(--border);
     display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;
     transition:width .22s ease,min-width .22s ease,border-color .22s ease;
+    position:relative;z-index:1;
   }
   /* See heatmap-map.html's own copy of this for the full rationale. */
   :root:not([data-device="mobile"]) #sidebar.collapsed{
@@ -451,7 +458,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v2.1</span>
+      <span class="version-tag">v2.2</span>
     </div>
   </div>
 </div>
@@ -874,17 +881,34 @@ map.addControl(new ThemeControl());
 
 /* ---------------- 3D view (perspective tilt) ----------------
    A cosmetic CSS transform on the map's own container, not a real 3D/terrain
-   renderer — see the #map.map-3d rule for why that's the honest scope here.
-   Map interaction is paused while it's on, and restored on toggle-off unless
-   Ruler or Draw happens to be active (those already own dragging/zoom via
-   setToolMode — this only touches them when nothing else is claiming them). */
+   renderer — an actual 3D engine (Mapbox GL/CesiumJS/deck.gl) would mean
+   replacing this whole Leaflet-based renderer. Panning/orbiting/zooming while
+   tilted are handled by this file's own listeners below instead of Leaflet's
+   own drag/zoom handlers, using map.panBy()/setZoom() directly — those only
+   need a raw pixel delta or a target zoom level, neither of which depends on
+   where exactly a click lands on the tilted surface, unlike Leaflet's own
+   handlers (which assume an untransformed flat container and would misread
+   clicks under the tilt). Map interaction is paused while it's on, and
+   restored on toggle-off unless Ruler or Draw happens to be active (those
+   already own dragging/zoom via setToolMode — this only touches them when
+   nothing else is claiming them). */
 let is3DActive = false;
+let tilt3D = { pitch: 55, yaw: 0 }; // pitch = rotateX (steepness), yaw = rotateZ (compass spin)
+const MAP_3D_SCALE = 1.35;
+const map3DEl = map.getContainer();
+
+function apply3DTransform() {
+  map3DEl.style.transform = `perspective(1400px) rotateX(${tilt3D.pitch}deg) rotateZ(${tilt3D.yaw}deg) scale(${MAP_3D_SCALE})`;
+}
+
 const Toggle3DControl = L.Control.extend({
   options: { position: 'topright' },
   onAdd: function() {
     const btn = L.DomUtil.create('div', 'basemap-toggle-btn');
-    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M3 7l9 5 9-5"/><path d="M12 12v10"/></svg>';
-    btn.title = '3D view — a tilted preview of the current view (map interaction pauses while active)';
+    btn.textContent = '3D';
+    btn.style.fontSize = '10.5px';
+    btn.style.fontWeight = '700';
+    btn.title = '3D view — drag to pan, middle-drag to orbit/tilt, scroll to zoom (other map interaction pauses while active)';
     L.DomEvent.on(btn, 'click', L.DomEvent.stop);
     L.DomEvent.on(btn, 'click', () => toggle3DView(!is3DActive));
     L.DomEvent.disableClickPropagation(btn);
@@ -897,7 +921,8 @@ map.addControl(toggle3DControl);
 
 function toggle3DView(on) {
   is3DActive = on;
-  map.getContainer().classList.toggle('map-3d', on);
+  map3DEl.classList.toggle('map-3d', on);
+  toggle3DControl._btn.textContent = on ? '2D' : '3D';
   toggle3DControl._btn.classList.toggle('active-toggle', on);
   if (on) {
     if (typeof toolMode !== 'undefined' && toolMode !== 'none') setToolMode('none');
@@ -906,14 +931,62 @@ function toggle3DView(on) {
     map.scrollWheelZoom.disable();
     map.touchZoom.disable();
     map.boxZoom.disable();
-  } else if (toolMode !== 'ruler' && toolMode !== 'draw') {
-    map.dragging.enable();
-    map.doubleClickZoom.enable();
-    map.scrollWheelZoom.enable();
-    map.touchZoom.enable();
-    map.boxZoom.enable();
+    apply3DTransform();
+  } else {
+    map3DEl.style.transform = '';
+    if (toolMode !== 'ruler' && toolMode !== 'draw') {
+      map.dragging.enable();
+      map.doubleClickZoom.enable();
+      map.scrollWheelZoom.enable();
+      map.touchZoom.enable();
+      map.boxZoom.enable();
+    }
   }
 }
+
+// Left-drag pans, middle-drag orbits (yaw) + adjusts steepness (pitch),
+// scroll zooms around the current center (not the cursor — that WOULD need
+// accurate cursor-to-latlng conversion, the exact thing the tilt breaks).
+let pan3DState = null, orbit3DState = null;
+map3DEl.addEventListener('mousedown', (e) => {
+  if (!is3DActive) return;
+  if (e.button === 0) {
+    pan3DState = { x: e.clientX, y: e.clientY };
+    e.preventDefault();
+  } else if (e.button === 1) {
+    orbit3DState = { x: e.clientX, y: e.clientY, pitch: tilt3D.pitch, yaw: tilt3D.yaw };
+    map3DEl.style.transition = 'none'; // instant feedback while actively dragging the tilt
+    e.preventDefault();
+  }
+});
+document.addEventListener('mousemove', (e) => {
+  if (!is3DActive) return;
+  if (pan3DState) {
+    const dx = e.clientX - pan3DState.x, dy = e.clientY - pan3DState.y;
+    pan3DState = { x: e.clientX, y: e.clientY };
+    map.panBy([-dx, -dy], { animate: false });
+  } else if (orbit3DState) {
+    const dx = e.clientX - orbit3DState.x, dy = e.clientY - orbit3DState.y;
+    tilt3D.yaw = orbit3DState.yaw + dx * 0.3;
+    tilt3D.pitch = Math.min(80, Math.max(10, orbit3DState.pitch - dy * 0.3));
+    apply3DTransform();
+  }
+});
+document.addEventListener('mouseup', () => {
+  pan3DState = null;
+  if (orbit3DState) { orbit3DState = null; map3DEl.style.transition = ''; }
+});
+map3DEl.addEventListener('contextmenu', (e) => { if (is3DActive) e.preventDefault(); });
+map3DEl.addEventListener('auxclick', (e) => { if (is3DActive && e.button === 1) e.preventDefault(); });
+map3DEl.addEventListener('wheel', (e) => {
+  if (!is3DActive) return;
+  e.preventDefault();
+  // animate:false — a fast scroll gesture fires many wheel events per second,
+  // each calling setZoom(); with animation on, a new call arriving before the
+  // previous zoom's animation finishes gets silently ignored, which reads as
+  // the wheel randomly not responding partway through a scroll.
+  map.setZoom(map.getZoom() + (e.deltaY < 0 ? 1 : -1), { animate: false });
+}, { passive: false });
 
 /* ---------------- Mobile / desktop layout toggle ----------------
    See heatmap-map.html's own copy of this (kept in sync) for the full
@@ -1818,7 +1891,10 @@ function multiAxisGradientIntensity(lat, lng, axes) {
 // the user placed the endpoint, not just a strip starting AT that endpoint,
 // which would leave a dead unfilled band in between.
 function computeAxisExtension(axes) {
-  const extending = (axes || []).filter(a => a.extendBeyond);
+  // Extends by default (mirrors the editor's own computeAxisExtension) —
+  // extendBeyond is only ever explicitly set to false, by the editor's own
+  // per-axis opt-out checkbox, so an unset/undefined axis extends too.
+  const extending = (axes || []).filter(a => a.extendBeyond !== false);
   if (!extending.length) return null;
   const HALF_WIDTH_M = 250; // how wide the buffer strip is, either side of the axis path
   const CAP_EXTRA_M = 300;  // a little past the very last point, for a rounded cap rather than a flat cut
