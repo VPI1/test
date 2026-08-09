@@ -479,7 +479,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v3.4</span>
+      <span class="version-tag">v3.5</span>
     </div>
   </div>
 </div>
@@ -944,7 +944,15 @@ document.getElementById('mapWrap').appendChild(map._controlContainer);
 // decoded value. Registered once, globally, before anything tries to use
 // the protocol it defines.
 const TERRAIN_GLOBAL_MIN = -100, TERRAIN_GLOBAL_MAX = 600, TERRAIN_LOCAL_DEVIATION = 30;
+// Processed tiles are cached for the rest of the session — MapLibre
+// re-requests the same z/x/y a lot as you orbit/zoom back over ground
+// you've already seen, and there's no reason to decode, despike, and
+// re-encode a tile a second time when the first result is still sitting
+// in memory. Keyed by the protocol URL, which already encodes z/x/y.
+const terrainTileCache = new Map();
 maplibregl.addProtocol('ukwarmap-terrain', async (params) => {
+  const cached = terrainTileCache.get(params.url);
+  if (cached) return { data: cached };
   const realUrl = params.url.replace('ukwarmap-terrain://', 'https://elevation-tiles-prod.s3.amazonaws.com/terrarium/') + '.png';
   const response = await fetch(realUrl);
   if (!response.ok) throw new Error(`terrain tile fetch failed: ${response.status}`);
@@ -968,6 +976,12 @@ maplibregl.addProtocol('ukwarmap-terrain', async (params) => {
     elev[p] = (d[i] * 256 + d[i + 1] + d[i + 2] / 256) - 32768;
   }
 
+  // neighborBuf is reused across all 65536 pixels rather than allocating a
+  // fresh array per pixel for its sort — that allocate-and-GC churn was the
+  // actual cost here, not the sort itself (8 elements sorts instantly).
+  // Yielding a couple of times through the tile keeps one big tile's worth
+  // of this from blocking the render thread in a single uninterrupted
+  // chunk, which is what "lag" during loading actually was.
   const neighborBuf = new Float32Array(8);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
@@ -981,8 +995,9 @@ maplibregl.addProtocol('ukwarmap-terrain', async (params) => {
           neighborBuf[n++] = elev[ny * w + nx];
         }
       }
-      const neighbors = Array.from(neighborBuf.subarray(0, n)).sort((a, b) => a - b);
-      const median = neighbors[Math.floor(n / 2)];
+      const view = neighborBuf.subarray(0, n);
+      view.sort(); // numeric ascending by default for typed arrays, unlike Array.prototype.sort
+      const median = view[Math.floor(n / 2)];
       const self = elev[p];
       const globallyBad = self < TERRAIN_GLOBAL_MIN || self > TERRAIN_GLOBAL_MAX;
       const locallyBad = Math.abs(self - median) > TERRAIN_LOCAL_DEVIATION;
@@ -994,11 +1009,14 @@ maplibregl.addProtocol('ukwarmap-terrain', async (params) => {
         d[i + 2] = 0;
       }
     }
+    if (y % 64 === 63) await new Promise(resolve => setTimeout(resolve, 0));
   }
 
   ctx.putImageData(imgData, 0, 0);
   const outBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-  return { data: await outBlob.arrayBuffer() };
+  const buf = await outBlob.arrayBuffer();
+  terrainTileCache.set(params.url, buf);
+  return { data: buf };
 });
 
 function ensure3DMap() {
