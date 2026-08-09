@@ -92,7 +92,19 @@
      coordinates, see the touch handlers in the script) that would otherwise
      fight with it. Scoped to #map only so normal text selection elsewhere
      (modals, credit links, etc.) is untouched. */
-  #map{flex:1;height:100%;background:var(--bg);-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;}
+  #map{
+    flex:1;height:100%;background:var(--bg);-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;
+    transition:transform .4s ease;transform-origin:50% 65%;
+  }
+  /* A CSS perspective tilt on the existing flat map, NOT real 3D terrain —
+     that would need an actual 3D engine (Mapbox GL/CesiumJS/deck.gl), a
+     wholesale replacement of this whole Leaflet-based renderer. Panning/
+     zooming is paused while active (see toggle3DView) because a rotated
+     element's on-screen bounding box no longer lines up with Leaflet's own
+     flat click/drag math — trying to interact with the tilted view would
+     register clicks against the wrong underlying map location. */
+  #map.map-3d{transform:perspective(1400px) rotateX(55deg) scale(1.35);}
+  .basemap-toggle-btn.active-toggle{background:var(--accent);color:#fff;}
   .leaflet-control-scale-line{
     background:var(--panel)!important;color:var(--text)!important;border:1px solid var(--border)!important;
     border-top:none!important;box-shadow:0 2px 8px #0006;border-radius:0 0 4px 4px;
@@ -523,8 +535,8 @@
             <option value="VIIRS_NOAA21_NRT">VIIRS NOAA-21</option>
             <option value="MODIS_NRT">MODIS</option>
           </select>
-          <select id="firmsDays" style="flex:0 0 70px;" title="FIRMS' own API rejects area queries wider than 5 days with a response that's missing CORS headers, which browsers can only report as a generic blocked/failed request — so the picker stops at 5 to avoid ever hitting that.">
-            <option value="1">1 day</option>
+          <select id="firmsDays" style="flex:0 0 70px;" title="FIRMS' own API caps this at 5 calendar days (day_range=1..5 — 'Today' means day_range=1, FIRMS' own definition of that value, not a separate rolling 24h option) and drops CORS headers on anything past that, which browsers can only report as a generic blocked/failed request.">
+            <option value="1">Today</option>
             <option value="2" selected>2 days</option>
             <option value="3">3 days</option>
             <option value="5">5 days</option>
@@ -561,7 +573,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v1.8</span>
+      <span class="version-tag">v2.0</span>
     </div>
   </div>
 </div>
@@ -1001,6 +1013,52 @@ const ThemeControl = L.Control.extend({
 });
 map.addControl(new ThemeControl());
 
+/* ---------------- 3D view (perspective tilt) ----------------
+   A cosmetic CSS transform on the map's own container, not a real 3D/terrain
+   renderer — see the #map.map-3d rule for why that's the honest scope here.
+   Map interaction (both Leaflet's own dragging/zoom AND this editor's
+   paint/polygon/etc. brush tools, which run on their own mousedown/mousemove
+   listeners independent of map.dragging) is paused while it's on. setMode('pan')
+   below is what actually blocks the brush tools — merely disabling
+   map.dragging wouldn't, since those listen for mouse events directly rather
+   than going through Leaflet's own drag handler. */
+let is3DActive = false;
+const Toggle3DControl = L.Control.extend({
+  options: { position: 'topright' },
+  onAdd: function() {
+    const btn = L.DomUtil.create('div', 'basemap-toggle-btn');
+    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7v10l9 5 9-5V7z"/><path d="M3 7l9 5 9-5"/><path d="M12 12v10"/></svg>';
+    btn.title = '3D view — a tilted preview of the current view (map/editing interaction pauses while active)';
+    L.DomEvent.on(btn, 'click', L.DomEvent.stop);
+    L.DomEvent.on(btn, 'click', () => toggle3DView(!is3DActive));
+    L.DomEvent.disableClickPropagation(btn);
+    this._btn = btn;
+    return btn;
+  }
+});
+const toggle3DControl = new Toggle3DControl();
+map.addControl(toggle3DControl);
+
+function toggle3DView(on) {
+  is3DActive = on;
+  map.getContainer().classList.toggle('map-3d', on);
+  toggle3DControl._btn.classList.toggle('active-toggle', on);
+  if (on) {
+    setMode('pan'); // backs out of any paint/polygon/gradient/erase/adjust/correct tool, and (via setMode's own toolMode-clearing) ruler/draw/coord too
+    map.dragging.disable();
+    map.doubleClickZoom.disable();
+    map.scrollWheelZoom.disable();
+    map.touchZoom.disable();
+    map.boxZoom.disable();
+  } else {
+    map.dragging.enable();
+    map.doubleClickZoom.enable();
+    map.scrollWheelZoom.enable();
+    map.touchZoom.enable();
+    map.boxZoom.enable();
+  }
+}
+
 /* ---------------- Mobile / desktop layout toggle ----------------
    Defaults to auto-detecting the actual device (a real phone gets the mobile
    layout with nobody touching anything) via navigator.userAgentData where
@@ -1200,6 +1258,29 @@ function setBasemap(key) {
 const LEGEND_LOW_LABEL = 'One-time';
 const LEGEND_HIGH_LABEL = 'Constant';
 
+// Declared here (ahead of FirmsLegendControl below, which needs it inside its
+// own onAdd — map.addControl() calls that synchronously at page-load time,
+// not lazily, so it has to exist before that point) even though it's really
+// FIRMS-specific data — see the NASA FIRMS section further down for the
+// dot-coloring function (firmsAgeColor) that uses this same array. Ordered
+// oldest-bucket-first so both the dot-coloring lookup and the legend
+// (rendered in this same order) stay a single source of truth — freshest
+// detections read as the most alarming color (dark red), oldest as dimmest.
+const FIRMS_AGE_STOPS = [
+  { maxHours: 6,  color: '#8b0000', label: '< 6 hr' },
+  { maxHours: 12, color: '#ff0000', label: '6–12 hr' },
+  { maxHours: 24, color: '#ff9800', label: '12–24 hr' },
+  { maxHours: 48, color: '#ffeb3b', label: '24–48 hr' },
+  { maxHours: Infinity, color: '#9e9e9e', label: '48 hr+' }
+];
+function firmsAgeColor(acqDate, acqTime) {
+  const hhmm = String(acqTime ?? '').padStart(4, '0');
+  const acquired = new Date(`${acqDate}T${hhmm.slice(0, 2)}:${hhmm.slice(2, 4)}:00Z`);
+  const hoursAgo = (Date.now() - acquired.getTime()) / 3600000;
+  const stop = FIRMS_AGE_STOPS.find(s => hoursAgo < s.maxHours);
+  return (stop || FIRMS_AGE_STOPS[FIRMS_AGE_STOPS.length - 1]).color;
+}
+
 const LegendControl = L.Control.extend({
   options: { position: 'bottomleft' },
   onAdd: function() {
@@ -1376,6 +1457,58 @@ const ElevLegendControl = L.Control.extend({
 const elevLegendControl = new ElevLegendControl();
 map.addControl(elevLegendControl);
 
+// FIRMS detections are colored by how long ago each was seen (see
+// firmsAgeColor/FIRMS_AGE_STOPS) rather than fire intensity — this reads that
+// scale back out, in the same oldest-first order the color lookup uses so the
+// two can never drift apart.
+const FirmsLegendControl = L.Control.extend({
+  options: { position: 'bottomleft' },
+  onAdd: function() {
+    const container = L.DomUtil.create('div', 'legend-control');
+    container.style.display = 'none';
+    container.innerHTML = `
+      <div class="legend-title">Fire detection age</div>
+      ${FIRMS_AGE_STOPS.map(s => `
+        <div style="display:flex;align-items:center;gap:6px;margin:2px 0;">
+          <span style="width:9px;height:9px;border-radius:50%;display:inline-block;background:${s.color};flex-shrink:0;"></span>
+          <span style="font-size:10.5px;color:var(--sub);">${s.label}</span>
+        </div>`).join('')}
+    `;
+    L.DomEvent.disableClickPropagation(container);
+    this._container = container;
+    return container;
+  }
+});
+const firmsLegendControl = new FirmsLegendControl();
+map.addControl(firmsLegendControl);
+function updateFirmsLegend(visible) {
+  if (firmsLegendControl._container) firmsLegendControl._container.style.display = visible ? 'block' : 'none';
+}
+
+// General reading key for the heatmap itself — blue to red across every
+// visible layer's combined intensity, not any one layer's specific gradient
+// (that's what the existing per-layer LegendControl above already covers when
+// a Red/Blue-palette layer happens to be selected). Shown/hidden alongside
+// the "Map" master checkbox and the Heatmap/Polygons view toggle — see
+// applyHeatmapMasterVisibility, the single place both already get decided.
+const HeatmapLegendControl = L.Control.extend({
+  options: { position: 'bottomleft' },
+  onAdd: function() {
+    const container = L.DomUtil.create('div', 'legend-control');
+    container.style.display = 'none';
+    container.innerHTML = `
+      <div class="legend-title">Heatmap intensity</div>
+      <div class="legend-bar" style="background:linear-gradient(90deg,#2244cc,#22aacc,#ffcc00,#ff3300);"></div>
+      <div class="legend-labels"><span>One-time infiltration</span><span>Constant infiltration</span></div>
+    `;
+    L.DomEvent.disableClickPropagation(container);
+    this._container = container;
+    return container;
+  }
+});
+const heatmapLegendControl = new HeatmapLegendControl();
+map.addControl(heatmapLegendControl);
+
 function updateElevLegend(min, max) {
   const container = elevLegendControl._container;
   if (!container) return;
@@ -1435,7 +1568,9 @@ terrainModeSelect.addEventListener('change', (e) => {
    browser's localStorage, never hardcoded or sent anywhere but NASA's own API.
    CSV rows are parsed with a small hand-written splitter (the feed has no
    quoted/embedded-comma fields) and drawn as canvas-rendered circle markers,
-   colored by fire radiative power. */
+   colored by how long ago each was detected (see firmsAgeColor/FIRMS_AGE_STOPS
+   below) rather than by radiative power — matching the reference site's own
+   "how fresh is this" reading at a glance, with the FIRMS legend explaining it. */
 const FIRMS_KEY_STORAGE_KEY = 'heatmapMapFirmsKey_v1';
 let firmsOverlay = null;
 let firmsRenderer = null;
@@ -1463,6 +1598,7 @@ async function toggleFirmsOverlay(enabled) {
   if (!enabled) {
     if (firmsOverlay) firmsOverlay.clearLayers();
     status(null);
+    updateFirmsLegend(false);
     return;
   }
 
@@ -1475,6 +1611,7 @@ async function toggleFirmsOverlay(enabled) {
     // immediately, so the key input flashed and vanished before you could
     // even click into it. Leaving it open lets you actually type a key in and
     // re-check the box, instead of it reading as the toggle "doing nothing."
+    updateFirmsLegend(false);
     return;
   }
   try { localStorage.setItem(FIRMS_KEY_STORAGE_KEY, key); } catch (e) {}
@@ -1522,6 +1659,7 @@ async function toggleFirmsOverlay(enabled) {
     // See the missing-key branch above for why firmsOpts stays open — the
     // error message and key field both need to stay visible so the user can
     // actually see what went wrong and fix it (e.g. a typo'd key).
+    updateFirmsLegend(false);
     return;
   }
 
@@ -1535,16 +1673,17 @@ async function toggleFirmsOverlay(enabled) {
   rows.forEach(r => {
     const lat = parseFloat(r.latitude), lng = parseFloat(r.longitude);
     if (!isFinite(lat) || !isFinite(lng)) return;
-    const frp = parseFloat(r.frp) || 0;
-    const color = frp > 20 ? '#d32f2f' : frp > 5 ? '#f57c00' : '#fbc02d';
     const time = String(r.acq_time ?? '').padStart(4, '0').replace(/(\d\d)(\d\d)/, '$1:$2');
+    const color = firmsAgeColor(r.acq_date, r.acq_time);
+    const frp = parseFloat(r.frp) || 0;
     L.circleMarker([lat, lng], {
       renderer: firmsRenderer, radius: 4, color, weight: 1, fillColor: color, fillOpacity: 0.7
     }).bindTooltip(`<strong>${r.acq_date} ${time} UTC</strong><br>${r.satellite || ''} | FRP ${frp} MW | conf ${r.confidence}`)
       .addTo(firmsOverlay);
     plotted++;
   });
-  status(`${plotted.toLocaleString()} detections, last ${days} day${days > 1 ? 's' : ''}` + (failures ? ` (${failures} source${failures > 1 ? 's' : ''} failed)` : ''));
+  status(`${plotted.toLocaleString()} detections, last ${days === 1 ? 'day' : days + ' days'}` + (failures ? ` (${failures} source${failures > 1 ? 's' : ''} failed)` : ''));
+  updateFirmsLegend(true);
 }
 
 document.getElementById('chkFirms').addEventListener('change', (e) => {
@@ -3258,14 +3397,21 @@ function multiAxisGradientIntensity(lat, lng, axes) {
 // already extrapolate smoothly past an axis's own endpoints (clamped, never
 // a hard cutoff), so the only thing actually confining a gradient fill to the
 // polygon shape is fillPolygonWithHeat's own pointInPolygon gate — this
-// computes an additional region (a capsule: a straight strip out from the
-// axis's far endpoint, rounded at the tip) that gate should also accept, for
-// each axis on a zone that wants it. Returns null if no axis on this zone has
-// the flag set.
+// computes an additional region that gate should also accept, for each axis
+// on a zone that wants it. Returns null if no axis on this zone has the flag
+// set.
+//
+// The buffer follows the axis's WHOLE path (start to end), not just a short
+// stretch past its far tip — an axis dragged well outside the polygon (the
+// normal way to make it "extend way past the boundary") needs fill covering
+// the entire gap between wherever the polygon edge actually is and wherever
+// the user placed the endpoint, not just a strip starting AT that endpoint,
+// which would leave a dead unfilled band in between.
 function computeAxisExtension(axes) {
   const extending = (axes || []).filter(a => a.extendBeyond);
   if (!extending.length) return null;
-  const HALF_WIDTH_M = 250; // how wide a strip the extension fills, either side of the axis
+  const HALF_WIDTH_M = 250; // how wide the buffer strip is, either side of the axis path
+  const CAP_EXTRA_M = 300;  // a little past the very last point, for a rounded cap rather than a flat cut
   const parts = extending.map(axis => {
     const path = axis.path.map(p => L.latLng(p[0], p[1]));
     const start = path[0], end = path[path.length - 1];
@@ -3273,8 +3419,7 @@ function computeAxisExtension(axes) {
       const mLat = 111320, mLng = 111320 * Math.cos(start.lat * Math.PI / 180) || 1;
       const bx = (end.lng - start.lng) * mLng, by = (end.lat - start.lat) * mLat;
       const radius = Math.sqrt(bx * bx + by * by) || 1;
-      const extendLenM = Math.max(radius, 300);
-      const totalR = radius + extendLenM;
+      const totalR = radius + CAP_EXTRA_M;
       const dLat = totalR / mLat, dLng = totalR / mLng;
       return {
         bounds: L.latLngBounds([start.lat - dLat, start.lng - dLng], [start.lat + dLat, start.lng + dLng]),
@@ -3285,20 +3430,19 @@ function computeAxisExtension(axes) {
         }
       };
     }
-    // Linear/path axis: extend past the END point, continuing in the direction
-    // of the path's final segment.
+    // Linear/path axis: buffer around the whole path, extended a little past
+    // the END point in the direction of the path's final segment.
     const prev = path.length > 1 ? path[path.length - 2] : start;
     const refLat = end.lat;
     const mLat = 111320, mLng = 111320 * Math.cos(refLat * Math.PI / 180) || 1;
     let dLat = (end.lat - prev.lat) * mLat, dLng = (end.lng - prev.lng) * mLng;
     const segLenM = Math.hypot(dLat, dLng) || 1;
     dLat /= segLenM; dLng /= segLenM; // unit direction, in meters-space
-    const axisLenM = start.distanceTo(end);
-    const extendLenM = Math.max(axisLenM, 300);
-    const far = L.latLng(end.lat + (dLat * extendLenM) / mLat, end.lng + (dLng * extendLenM) / mLng);
+    const far = L.latLng(end.lat + (dLat * CAP_EXTRA_M) / mLat, end.lng + (dLng * CAP_EXTRA_M) / mLng);
+    const extendedPath = path.concat([far]);
     return {
-      bounds: L.latLngBounds([end, far]).pad(HALF_WIDTH_M / 90000),
-      test: (lat, lng) => projectOntoPath(lat, lng, [end, far]).dist <= HALF_WIDTH_M
+      bounds: L.latLngBounds(extendedPath).pad(HALF_WIDTH_M / 90000),
+      test: (lat, lng) => projectOntoPath(lat, lng, extendedPath).dist <= HALF_WIDTH_M
     };
   });
   let bounds = parts[0].bounds;
@@ -4868,6 +5012,13 @@ function setMode(newMode, _skipToolModeClear) {
   // force dragging/vertex-mode off without this immediately clobbering the
   // toolMode it just set — that's what the flag is for.
   if (!_skipToolModeClear && typeof setToolMode === 'function') setToolMode('none');
+  // A real heat-editing tool and the 3D tilt both want exclusive control of
+  // the map — can't paint/edit on a tilted, non-interactive preview — so
+  // picking one always drops out of 3D first. newMode !== 'pan' specifically
+  // (not "any call") so toggle3DView's own setMode('pan') call, made to back
+  // OUT of whatever tool was active when 3D was turned on, doesn't immediately
+  // cancel itself back out.
+  if (newMode !== 'pan' && typeof is3DActive !== 'undefined' && is3DActive) toggle3DView(false);
   // Leaving 'gradient' straight into 'gradient-axis' is the normal continuation after
   // Finish Zone — don't clear the drawing then, or the zone preview vanishes right
   // when the user needs it most (while picking the gradient's start/end points).
@@ -5891,6 +6042,9 @@ function applyHeatmapMasterVisibility() {
       if (!shouldShow && isShown) map.removeLayer(rec._bakedOverlay);
     });
   });
+  if (heatmapLegendControl._container) {
+    heatmapLegendControl._container.style.display = (heatmapMasterVisible && currentViewMode === 'heatmap') ? 'block' : 'none';
+  }
 }
 document.getElementById('chkHeatmapMaster').addEventListener('change', (e) => {
   heatmapMasterVisible = e.target.checked;
@@ -6109,6 +6263,10 @@ function setToolMode(newMode) {
   rulerPanel.style.display = toolMode === 'ruler' ? 'flex' : 'none';
   map.getContainer().classList.toggle('drawing-cursor', toolMode === 'draw' || toolMode === 'coord');
   if (toolMode !== 'none') setMode('pan', true);
+  // Ruler/Draw/Coords and the 3D tilt both want exclusive control of the map
+  // — can't measure/sketch/pick on a tilted, non-interactive preview — so
+  // picking one always drops out of 3D first.
+  if (toolMode !== 'none' && is3DActive) toggle3DView(false);
   // Each tool's own on-map artifact only makes sense while that tool is the
   // one you're actively using — leaving it up after switching away just
   // clutters the map with a stale measurement/sketch/popup from whatever you
@@ -6134,13 +6292,15 @@ function setToolMode(newMode) {
     map.scrollWheelZoom.disable();
     map.touchZoom.disable();
     map.boxZoom.disable();
-  } else {
+  } else if (!is3DActive) {
     map.dragging.enable();
     map.doubleClickZoom.enable();
     map.scrollWheelZoom.enable();
     map.touchZoom.enable();
     map.boxZoom.enable();
     if (drawingInProgress) cancelCurrentDrawing();
+  } else if (drawingInProgress) {
+    cancelCurrentDrawing();
   }
 }
 btnRuler.addEventListener('click', () => setToolMode(toolMode === 'ruler' ? 'none' : 'ruler'));
