@@ -513,7 +513,8 @@
         <label for="chkFirms"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2.5px;margin-right:3px;"><path d="M12 21c3.8 0 6.2-2.5 6.2-6 0-3.8-3-5.8-4-9.3-.9 1.8-1 3.6-2.6 3.6-.9 0-1-1.6-1-1.6-2 2-3.6 4.6-3.6 7.3 0 3.5 2.2 6 5 6z"/></svg>FIRMS fire detections</label>
       </div>
       <div class="overlay-sub" id="firmsOpts" style="display:none;">
-        <input type="text" id="firmsKey" placeholder="NASA FIRMS MAP_KEY">
+        <input type="text" id="firmsKey" placeholder="NASA FIRMS MAP_KEY" value="4342fe36088924a13be37992af6dfbb8">
+        <div style="font-size:10px;color:var(--sub);margin:-2px 0 4px;">Shared key — if fire data stops loading, get your own free key at <a href="https://firms.modaps.eosdis.nasa.gov/api/map_key/" target="_blank" rel="noopener" style="color:var(--accent);">firms.modaps.eosdis.nasa.gov/api/map_key</a></div>
         <div class="overlay-sub-row">
           <select id="firmsSource">
             <option value="ALL_VIIRS">All VIIRS</option>
@@ -674,7 +675,7 @@
       <div class="shortcut-row"><span class="sc-desc">Jump to first search result</span><span class="kbd">Enter</span></div>
       <div class="shortcut-row"><span class="sc-desc">Clear search results</span><span class="kbd">Esc</span></div>
     </div>
-    <p style="font-size:11px;color:var(--sub);margin:12px 0 0;">Undo/redo acts on whichever tool is active — map edits normally, or your local drawings while the Draw tool is open.</p>
+    <p style="font-size:11px;color:var(--sub);margin:12px 0 0;">Undo/redo acts on whichever tool is active — map edits normally, one stroke at a time while Draw is open, or one placed point at a time while Ruler is open.</p>
     <div class="modal-actions" style="justify-content:flex-end;">
       <button id="btnCloseShortcuts" class="primary">Close</button>
     </div>
@@ -2200,16 +2201,21 @@ document.addEventListener('keydown', (e) => {
   const tag = (document.activeElement && document.activeElement.tagName) || '';
   if (tag === 'INPUT' || tag === 'TEXTAREA') return; // let native undo work while editing text fields
   const key = e.key.toLowerCase();
-  // While the local draw tool is active, Ctrl+Z/Ctrl+Shift+Z/Ctrl+Y target its
-  // own undo/redo stack (see drawUndo/drawRedo) instead of the layer-editing
-  // one — the two are entirely separate histories, so routing by toolMode keeps
-  // each shortcut acting on whatever the user is actually looking at.
+  // While the local draw tool or the ruler is active, Ctrl+Z/Ctrl+Shift+Z/
+  // Ctrl+Y target that tool's OWN undo/redo stack (see drawUndo/drawRedo and
+  // rulerUndo/rulerRedo) instead of the layer-editing one — each is an
+  // entirely separate history, so routing by toolMode keeps the shortcut
+  // acting on whatever the user is actually looking at.
   if ((e.ctrlKey || e.metaKey) && key === 'z' && !e.shiftKey) {
     e.preventDefault();
-    if (toolMode === 'draw') drawUndo(); else undo();
+    if (toolMode === 'draw') drawUndo();
+    else if (toolMode === 'ruler') rulerUndo();
+    else undo();
   } else if ((e.ctrlKey || e.metaKey) && ((key === 'z' && e.shiftKey) || key === 'y')) {
     e.preventDefault();
-    if (toolMode === 'draw') drawRedo(); else redo();
+    if (toolMode === 'draw') drawRedo();
+    else if (toolMode === 'ruler') rulerRedo();
+    else redo();
   } else if (key === 'escape' && toolMode === 'draw' && drawingInProgress) {
     cancelCurrentDrawing();
   }
@@ -6011,14 +6017,26 @@ const rulerPanel = document.getElementById('rulerPanel');
 
 function setToolMode(newMode) {
   if (toolMode === newMode) return;
+  const oldMode = toolMode;
   toolMode = newMode;
   btnRuler.classList.toggle('active-toggle', toolMode === 'ruler');
   btnDraw.classList.toggle('active-toggle', toolMode === 'draw');
   btnCoordPick.classList.toggle('active-toggle', toolMode === 'coord');
   drawToolbar.style.display = toolMode === 'draw' ? 'flex' : 'none';
-  rulerPanel.style.display = (toolMode === 'ruler' || rulerPoints.length) ? 'flex' : 'none';
+  rulerPanel.style.display = toolMode === 'ruler' ? 'flex' : 'none';
   map.getContainer().classList.toggle('drawing-cursor', toolMode === 'draw' || toolMode === 'coord');
   if (toolMode !== 'none') setMode('pan', true);
+  // Each tool's own on-map artifact only makes sense while that tool is the
+  // one you're actively using — leaving it up after switching away just
+  // clutters the map with a stale measurement/sketch/popup from whatever you
+  // were doing a moment ago. So switching AWAY from a tool tears down
+  // whatever it left behind; switching a tool back ON (Draw specifically)
+  // brings its own layer back. Add new tools with their own leftover state
+  // here the same way.
+  map.closePopup(); // closes any open coordinate popup, regardless of which tool (or none) opened it
+  if (oldMode === 'ruler') rulerClear();
+  if (oldMode === 'draw') map.removeLayer(drawLayerGroup);
+  if (toolMode === 'draw') drawLayerGroup.addTo(map);
   // Ruler and Draw both need the view to hold still for the whole interaction
   // (Draw's live preview — see the canvas-based system below — tracks the
   // pointer in screen-pixel space, which only stays valid if the view can't
@@ -6101,6 +6119,7 @@ function redrawRuler() {
 
 function rulerClear() {
   rulerPoints = [];
+  rulerRedoPoints = [];
   rulerClosed = false;
   rulerLayerGroup.clearLayers();
   rulerAreaWrap.style.display = 'none';
@@ -6123,6 +6142,27 @@ function rulerAddPoint(latlng) {
     if (firstPx.distanceTo(clickPx) < 12) { rulerClosed = true; redrawRuler(); return; }
   }
   rulerPoints.push(latlng);
+  rulerRedoPoints = []; // a freshly placed vertex invalidates whatever redo history existed
+  redrawRuler();
+}
+
+// Ctrl+Z/Ctrl+Shift+Z equivalents for the ruler, one vertex at a time — see
+// the global keydown handler, which routes to these while toolMode is
+// 'ruler' the same way it already routes to drawUndo/drawRedo for 'draw'.
+let rulerRedoPoints = [];
+function rulerUndo() {
+  if (!rulerPoints.length) return;
+  rulerRedoPoints.push(rulerPoints.pop());
+  rulerClosed = false; // an unclosed path is the only sensible state after removing a vertex
+  redrawRuler();
+  // redrawRuler's own empty-path branch doesn't reset the distance/area
+  // readouts (rulerClear normally handles that) — do it here so undoing back
+  // to zero points doesn't leave a stale number on screen.
+  if (!rulerPoints.length) { rulerDistanceEl.textContent = '0 m'; rulerAreaWrap.style.display = 'none'; }
+}
+function rulerRedo() {
+  if (!rulerRedoPoints.length) return;
+  rulerPoints.push(rulerRedoPoints.pop());
   redrawRuler();
 }
 
