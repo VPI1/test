@@ -105,6 +105,10 @@
      register clicks against the wrong underlying map location. */
   #map.map-3d{transform:perspective(1400px) rotateX(55deg) scale(1.35);}
   .basemap-toggle-btn.active-toggle{background:var(--accent);color:#fff;}
+  /* Leaflet's own scale control sits 5px closer to the edge than the
+     .legend-control boxes stacked above it in the same bottom-left corner —
+     nudging it over lines their left edges up. */
+  .leaflet-control-scale{margin-left:10px!important;}
   .leaflet-control-scale-line{
     background:var(--panel)!important;color:var(--text)!important;border:1px solid var(--border)!important;
     border-top:none!important;box-shadow:0 2px 8px #0006;border-radius:0 0 4px 4px;
@@ -247,7 +251,7 @@
     box-shadow:0 2px 8px #0006;padding:9px 11px;font-size:11px;min-width:170px;display:none;
   }
   .legend-control .legend-bar{height:10px;border-radius:5px;margin:6px 0 4px;border:1px solid var(--border);}
-  .legend-control .legend-labels{display:flex;justify-content:space-between;color:var(--sub);}
+  .legend-control .legend-labels{display:flex;justify-content:space-between;gap:12px;color:var(--sub);}
   .legend-control .legend-title{font-weight:600;color:var(--text);}
   .leaflet-popup.polygon-edit-popup .leaflet-popup-content-wrapper{
     background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;
@@ -573,7 +577,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v2.0</span>
+      <span class="version-tag">v2.1</span>
     </div>
   </div>
 </div>
@@ -1497,7 +1501,7 @@ const HeatmapLegendControl = L.Control.extend({
     const container = L.DomUtil.create('div', 'legend-control');
     container.style.display = 'none';
     container.innerHTML = `
-      <div class="legend-title">Heatmap intensity</div>
+      <div class="legend-title">Infiltration frequency</div>
       <div class="legend-bar" style="background:linear-gradient(90deg,#2244cc,#22aacc,#ffcc00,#ff3300);"></div>
       <div class="legend-labels"><span>One-time infiltration</span><span>Constant infiltration</span></div>
     `;
@@ -3134,6 +3138,15 @@ function startEditingSpecificAxis(layer, record, axisId) {
   axisEditingAxisId = axisId;
   const axis = ensureGradientAxes(record).find(a => a.id === axisId);
   if (!axis) return;
+  // liveUpdateAxisFill (see below) pushes the live-dragged preview straight
+  // into layer.points, but a BAKED record's actual fill lives in its own
+  // static image overlay instead — left in place, that stale image (still
+  // showing whatever extent the axis had at the LAST bake, before this drag)
+  // would sit on top of/around the live preview, reading as "the extension
+  // stopped working" the moment you drag an axis further than that. Unbaking
+  // here removes it for the duration of the edit; commitAxisEdit's own
+  // appendPolygonPoints call re-bakes fresh from the final result.
+  if (record._baked) unbakePolygonOverlay(record);
   setMode('gradient-axis');
   setAxisMarkersFromPath(axis.path.map(p => L.latLng(p[0], p[1])));
   axisPresetActions.style.display = 'flex';
@@ -3153,6 +3166,10 @@ function startAddingAxis(layer, record) {
   axisEditingLayer = layer;
   axisEditingRecord = record;
   axisEditingAxisId = null;
+  // See startEditingSpecificAxis's own comment on this same call — a baked
+  // record's stale image would otherwise sit frozen at its last-baked extent
+  // while the live preview underneath keeps extending past it.
+  if (record._baked) unbakePolygonOverlay(record);
   const axes = ensureGradientAxes(record);
   const last = axes[axes.length - 1];
   gradStartNum.value = last ? last.intensityStart.toFixed(2) : '0.10';
