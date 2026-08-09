@@ -479,7 +479,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v3.2</span>
+      <span class="version-tag">v3.3</span>
     </div>
   </div>
 </div>
@@ -930,6 +930,46 @@ let map3DGL = null, map3DReady = false, pendingShow3D = false, overlaySyncArmed 
 const map3DContainerEl = document.getElementById('map3d');
 document.getElementById('mapWrap').appendChild(map._controlContainer);
 
+// Scaling exaggeration down (see setTerrain below) only shrinks a bad DEM
+// pixel's spike proportionally — a pixel that decodes to, say, 3000m still
+// produces an obvious tower at 0.4x exaggeration, just a shorter one.
+// Actually removing the spikes means catching the bad pixels themselves,
+// before MapLibre ever builds a mesh from them. This registers a custom
+// tile protocol that fetches each real elevation tile, decodes every pixel
+// with the same Terrarium formula MapLibre itself uses, and re-encodes any
+// pixel outside a physically sane elevation range for this theater (a wide
+// margin around actual Ukrainian terrain, which outside the Carpathians —
+// nowhere near the front line — doesn't go much above a few hundred
+// meters) back down to that range, leaving every normal pixel untouched.
+// Registered once, globally, before anything tries to use it.
+const TERRAIN_MIN_ELEV = -100, TERRAIN_MAX_ELEV = 600;
+maplibregl.addProtocol('ukwarmap-terrain', async (params) => {
+  const realUrl = params.url.replace('ukwarmap-terrain://', 'https://elevation-tiles-prod.s3.amazonaws.com/terrarium/') + '.png';
+  const response = await fetch(realUrl);
+  if (!response.ok) throw new Error(`terrain tile fetch failed: ${response.status}`);
+  const blob = await response.blob();
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement('canvas');
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(bitmap, 0, 0);
+  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = imgData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const elev = (d[i] * 256 + d[i + 1] + d[i + 2] / 256) - 32768;
+    if (elev < TERRAIN_MIN_ELEV || elev > TERRAIN_MAX_ELEV) {
+      const clamped = Math.round(Math.min(TERRAIN_MAX_ELEV, Math.max(TERRAIN_MIN_ELEV, elev))) + 32768;
+      d[i] = Math.floor(clamped / 256);
+      d[i + 1] = clamped % 256;
+      d[i + 2] = 0;
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+  const outBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+  return { data: await outBlob.arrayBuffer() };
+});
+
 function ensure3DMap() {
   if (map3DGL) return;
   map3DGL = new maplibregl.Map({
@@ -987,32 +1027,18 @@ function ensure3DMap() {
   map3DGL.on('load', () => {
     map3DGL.addSource('terrainSource', {
       type: 'raster-dem',
-      // Virtual-hosted-style URL, not the path-style one used elsewhere in
-      // this file (see the terrain-analysis overlay) — that form works fine
-      // for plain <img> display, but MapLibre's terrain needs to read the
-      // actual pixel bytes to decode elevation, which needs a real CORS
-      // response, and only this hostname form of the same S3 bucket sends
-      // one; the path-style URL fails outright with a CORS error.
-      tiles: ['https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png'],
+      // Routed through the ukwarmap-terrain:// protocol registered above,
+      // not fetched directly — that's what actually clamps the occasional
+      // corrupted pixel in this free public elevation dataset before
+      // MapLibre ever turns it into geometry, instead of just scaling any
+      // resulting spike down (which still leaves an obviously-wrong bump).
+      tiles: ['ukwarmap-terrain://{z}/{x}/{y}'],
       tileSize: 256, encoding: 'terrarium', maxzoom: 15
     });
-    // Exaggeration ramps up with zoom instead of a flat value, and is capped
-    // much lower than a "normal" terrain exaggeration (0.4, not 1.0) — this
-    // free public elevation dataset occasionally has a noisy pixel that
-    // decodes to a wildly wrong height. The camera's OWN zoom isn't the
-    // whole story here: tilted toward the horizon, the terrain far in the
-    // distance is still drawn from much coarser tiles than what's directly
-    // underfoot, regardless of how zoomed-in the camera itself is — a
-    // steep/horizon-grazing view keeps that coarser, more spike-prone
-    // terrain on screen even when close to the ground. Since exaggeration
-    // is one number applied to the whole visible terrain (there's no way to
-    // scale it down only for distant/low-detail tiles), the only reliable
-    // lever against that is keeping the ceiling low everywhere, trading some
-    // of the relief's drama for far fewer/shorter spikes at the horizon.
-    map3DGL.setTerrain({
-      source: 'terrainSource',
-      exaggeration: ['interpolate', ['linear'], ['zoom'], 5, 0, 10, 0.15, 14, 0.4]
-    });
+    // A normal exaggeration now that the source data itself is clamped —
+    // no longer trying to use a low ceiling to hide spikes that shouldn't
+    // exist in the first place.
+    map3DGL.setTerrain({ source: 'terrainSource', exaggeration: 1.0 });
     map3DGL.setSky({ 'sky-color': '#8bb8e8', 'horizon-color': '#eef2f7', 'fog-color': '#cbd8e6', 'fog-ground-blend': 0.5 });
     map3DReady = true;
     apply3DBasemapLayer(currentBasemapKey);
