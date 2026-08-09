@@ -85,6 +85,10 @@
      register clicks against the wrong underlying map location. */
   #map.map-3d{transform:perspective(1400px) rotateX(55deg) scale(1.35);}
   .basemap-toggle-btn.active-toggle{background:var(--accent);color:#fff;}
+  /* Leaflet's own scale control sits 5px closer to the edge than the
+     .legend-control boxes stacked above it in the same bottom-left corner —
+     nudging it over lines their left edges up. */
+  .leaflet-control-scale{margin-left:10px!important;}
   .leaflet-control-scale-line{
     background:var(--panel)!important;color:var(--text)!important;border:1px solid var(--border)!important;
     border-top:none!important;box-shadow:0 2px 8px #0006;border-radius:0 0 4px 4px;
@@ -176,7 +180,7 @@
     box-shadow:0 2px 8px #0006;padding:9px 11px;font-size:11px;min-width:170px;display:none;
   }
   .legend-control .legend-bar{height:10px;border-radius:5px;margin:6px 0 4px;border:1px solid var(--border);}
-  .legend-control .legend-labels{display:flex;justify-content:space-between;color:var(--sub);}
+  .legend-control .legend-labels{display:flex;justify-content:space-between;gap:12px;color:var(--sub);}
   .legend-control .legend-title{font-weight:600;color:var(--text);}
   .leaflet-popup.polygon-edit-popup .leaflet-popup-content-wrapper{
     background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;
@@ -447,7 +451,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v2.0</span>
+      <span class="version-tag">v2.1</span>
     </div>
   </div>
 </div>
@@ -1306,7 +1310,7 @@ const HeatmapLegendControl = L.Control.extend({
     const container = L.DomUtil.create('div', 'legend-control');
     container.style.display = 'none';
     container.innerHTML = `
-      <div class="legend-title">Heatmap intensity</div>
+      <div class="legend-title">Infiltration frequency</div>
       <div class="legend-bar" style="background:linear-gradient(90deg,#2244cc,#22aacc,#ffcc00,#ff3300);"></div>
       <div class="legend-labels"><span>One-time infiltration</span><span>Constant infiltration</span></div>
     `;
