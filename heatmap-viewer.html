@@ -88,8 +88,14 @@
      sits below #sidebar (z-index:1) in the root context. */
   #mapWrap{flex:1;height:100%;position:relative;z-index:0;}
   #map{
-    position:absolute;inset:0;background:var(--bg);-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;
+    position:absolute;inset:0;z-index:0;background:var(--bg);-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;
   }
+  /* #map needs its OWN explicit z-index (not just position) for the same
+     reason #mapWrap needs one relative to #sidebar: without it, #map
+     doesn't establish a stacking context of its own, and Leaflet's internal
+     panes (tile/overlay/popup — z-index 200 to 700 in leaflet.css) leak
+     straight past it to compete with #map3d in #mapWrap's shared context,
+     winning outright and burying the WebGL view under the flat map. */
   #map3d{position:absolute;inset:0;z-index:1;display:none;background:#0a0e14;}
   #map3d.active{display:block;}
   #map3d canvas{cursor:grab;}
