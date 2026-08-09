@@ -563,7 +563,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v1.6</span>
+      <span class="version-tag">v1.7</span>
     </div>
   </div>
 </div>
@@ -2912,7 +2912,7 @@ function liveUpdateAxisFill() {
       // Repositioning an existing axis: keep its own type/start/end, only the
       // path (from the live markers) changes.
       const original = existingAxes.find(a => a.id === axisEditingAxisId);
-      const liveAxis = { id: axisEditingAxisId, path: path.map(p => [p.lat, p.lng]), type: original.type, intensityStart: original.intensityStart, intensityEnd: original.intensityEnd };
+      const liveAxis = { id: axisEditingAxisId, path: path.map(p => [p.lat, p.lng]), type: original.type, intensityStart: original.intensityStart, intensityEnd: original.intensityEnd, extendBeyond: original.extendBeyond };
       liveAxes = existingAxes.map(a => a.id === axisEditingAxisId ? liveAxis : a);
     } else {
       // Adding a brand new axis: the toolbar's grad start/end/type sliders (the
@@ -2921,11 +2921,13 @@ function liveUpdateAxisFill() {
       const liveAxis = { id: -1, path: path.map(p => [p.lat, p.lng]), type: gradientType, intensityStart: getGradientStart(), intensityEnd: getGradientEnd() };
       liveAxes = existingAxes.concat([liveAxis]);
     }
+    const liveExtension = computeAxisExtension(liveAxes);
     filterLayerPoints(layer, (p, i) => layer.pointOwners[i] !== rec.id);
     fillPolygonWithHeat(
       layer, rec.vertices.map(v => L.latLng(v[0], v[1])),
       (lat, lng) => multiAxisGradientIntensity(lat, lng, liveAxes),
-      rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks
+      rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks,
+      undefined, undefined, undefined, liveExtension
     );
     refreshHeatLayer(layer);
     scheduleGradientExposureCalibration(layer);
@@ -3242,6 +3244,61 @@ function multiAxisGradientIntensity(lat, lng, axes) {
     totalWeight += weight;
   }
   return totalWeight > 0 ? weightedSum / totalWeight : 0;
+}
+
+// An axis flagged extendBeyond is allowed to keep contributing fill PAST the
+// zone's own polygon boundary, in the direction it points — e.g. a river
+// valley's infiltration pressure doesn't actually stop dead at whatever
+// boundary was hand-drawn around it. gradientIntensityAt/projectOntoPath
+// already extrapolate smoothly past an axis's own endpoints (clamped, never
+// a hard cutoff), so the only thing actually confining a gradient fill to the
+// polygon shape is fillPolygonWithHeat's own pointInPolygon gate — this
+// computes an additional region (a capsule: a straight strip out from the
+// axis's far endpoint, rounded at the tip) that gate should also accept, for
+// each axis on a zone that wants it. Returns null if no axis on this zone has
+// the flag set.
+function computeAxisExtension(axes) {
+  const extending = (axes || []).filter(a => a.extendBeyond);
+  if (!extending.length) return null;
+  const HALF_WIDTH_M = 250; // how wide a strip the extension fills, either side of the axis
+  const parts = extending.map(axis => {
+    const path = axis.path.map(p => L.latLng(p[0], p[1]));
+    const start = path[0], end = path[path.length - 1];
+    if (axis.type === 'radial') {
+      const mLat = 111320, mLng = 111320 * Math.cos(start.lat * Math.PI / 180) || 1;
+      const bx = (end.lng - start.lng) * mLng, by = (end.lat - start.lat) * mLat;
+      const radius = Math.sqrt(bx * bx + by * by) || 1;
+      const extendLenM = Math.max(radius, 300);
+      const totalR = radius + extendLenM;
+      const dLat = totalR / mLat, dLng = totalR / mLng;
+      return {
+        bounds: L.latLngBounds([start.lat - dLat, start.lng - dLng], [start.lat + dLat, start.lng + dLng]),
+        test: (lat, lng) => {
+          const px = (lng - start.lng) * mLng, py = (lat - start.lat) * mLat;
+          const d = Math.hypot(px, py);
+          return d > radius && d <= totalR;
+        }
+      };
+    }
+    // Linear/path axis: extend past the END point, continuing in the direction
+    // of the path's final segment.
+    const prev = path.length > 1 ? path[path.length - 2] : start;
+    const refLat = end.lat;
+    const mLat = 111320, mLng = 111320 * Math.cos(refLat * Math.PI / 180) || 1;
+    let dLat = (end.lat - prev.lat) * mLat, dLng = (end.lng - prev.lng) * mLng;
+    const segLenM = Math.hypot(dLat, dLng) || 1;
+    dLat /= segLenM; dLng /= segLenM; // unit direction, in meters-space
+    const axisLenM = start.distanceTo(end);
+    const extendLenM = Math.max(axisLenM, 300);
+    const far = L.latLng(end.lat + (dLat * extendLenM) / mLat, end.lng + (dLng * extendLenM) / mLng);
+    return {
+      bounds: L.latLngBounds([end, far]).pad(HALF_WIDTH_M / 90000),
+      test: (lat, lng) => projectOntoPath(lat, lng, [end, far]).dist <= HALF_WIDTH_M
+    };
+  });
+  let bounds = parts[0].bounds;
+  for (let i = 1; i < parts.length; i++) bounds = bounds.extend(parts[i].bounds);
+  return { bounds, test: (lat, lng) => parts.some(p => p.test(lat, lng)) };
 }
 
 // Older records/exports (or externally-authored GeoJSON) only have the single flat
@@ -3731,6 +3788,10 @@ function openPolygonEditPopup(layer, record, latlng) {
             <button class="axis-reverse" style="flex:1;padding:3px 4px;border-radius:5px;border:1px solid #343d52;background:transparent;color:inherit;cursor:pointer;font-size:10.5px;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h11l-3-3"/><path d="M17 17H6l3 3"/></svg> Reverse</button>
             <button class="axis-reposition" style="flex:1;padding:3px 4px;border-radius:5px;border:1px solid #ffd166;background:transparent;color:#ffd166;cursor:pointer;font-size:10.5px;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg> Reposition</button>
           </div>
+          <label style="display:flex;align-items:center;gap:5px;font-size:10.5px;color:var(--sub);cursor:pointer;" title="Lets this axis's gradient keep going a little past the zone's own drawn boundary, in the direction it points, instead of stopping dead at the edge.">
+            <input type="checkbox" class="axis-extend" ${axis.extendBeyond ? 'checked' : ''} style="accent-color:var(--accent);width:13px;height:13px;">
+            Extend past zone boundary
+          </label>
         </div>
       `).join('');
       container.innerHTML = `
@@ -3794,6 +3855,20 @@ function openPolygonEditPopup(layer, record, latlng) {
           liveUpdateMultiAxis();
         });
         row.querySelector('.axis-reposition').addEventListener('click', () => startEditingSpecificAxis(layer, record, axisId));
+        // Unlike Start/End/type/Reverse above (which only re-color EXISTING fill
+        // points via liveUpdateMultiAxis), toggling this changes which area the
+        // fill covers — it needs the point SET itself regenerated, the same
+        // full filterLayerPoints+appendPolygonPoints cycle the remove-axis
+        // handler below already uses.
+        row.querySelector('.axis-extend').addEventListener('change', (e) => {
+          ensureUndo();
+          axis.extendBeyond = e.target.checked;
+          filterLayerPoints(layer, (p, i) => layer.pointOwners[i] !== record.id);
+          appendPolygonPoints(layer, record);
+          refreshHeatLayer(layer);
+          scheduleGradientExposureCalibration(layer);
+          updateLayerMetaOnly(layer);
+        });
         const removeBtn = row.querySelector('.axis-remove');
         if (removeBtn) {
           removeBtn.addEventListener('click', () => {
@@ -4243,8 +4318,8 @@ let lastFillClippedBounds = null;
 // viewportClippedBounds(verts) — used by bakePolygon to fill a shape's FULL
 // extent regardless of what's currently on screen, since a baked image needs
 // to be complete on its own (see bakePolygon's own comment for why).
-function fillPolygonWithHeat(layer, verts, intensityFn, fillFraction, polygonId, eraseMarks, intensityOverrides, boostMarks, maxSamplesOverride, outPoints, forceBounds) {
-  const fullBounds = L.latLngBounds(verts);
+function fillPolygonWithHeat(layer, verts, intensityFn, fillFraction, polygonId, eraseMarks, intensityOverrides, boostMarks, maxSamplesOverride, outPoints, forceBounds, extension) {
+  const fullBounds = extension ? L.latLngBounds(verts).extend(extension.bounds) : L.latLngBounds(verts);
   const clipped = forceBounds || viewportClippedBounds(fullBounds);
   lastFillClippedBounds = clipped;
   if (!clipped) { lastFillWasCoarsened = false; return 0; } // nothing to fill — this shape is entirely off-screen right now
@@ -4322,7 +4397,7 @@ function fillPolygonWithHeat(layer, verts, intensityFn, fillFraction, polygonId,
       const cellSeed = rowIdx * 92821 + colIdx * 68917;
       const jLat = lat + (seededRandom(cellSeed) - 0.5) * latStep * 0.85;
       const jLng = lng + (seededRandom(cellSeed + 1) - 0.5) * lngStep * 0.85;
-      if (pointInPolygon(jLat, jLng, verts) && !isErased(jLat, jLng, eraseMarks)) {
+      if ((pointInPolygon(jLat, jLng, verts) || (extension && extension.test(jLat, jLng))) && !isErased(jLat, jLng, eraseMarks)) {
         // Keep both the jittered position (for placement/hit-testing) and the
         // stable, un-jittered grid-cell center (for evaluating intensityFn) —
         // see note below on why they diverge.
@@ -4548,7 +4623,9 @@ const BAKE_MAX_CANVAS_DIM = 1200;
 function bakePolygon(layer, rec, maxSamplesOverride) {
   if (!layer.visible || rec._editingLive) return null;
   const vertsLL = rec.vertices.map(v => L.latLng(v[0], v[1]));
-  const fullBounds = L.latLngBounds(vertsLL);
+  const axes = rec.isGradient ? ensureGradientAxes(rec) : null;
+  const extension = axes ? computeAxisExtension(axes) : null;
+  const fullBounds = extension ? L.latLngBounds(vertsLL).extend(extension.bounds) : L.latLngBounds(vertsLL);
   // Skip (re)baking work for a shape nowhere near the current view — matches
   // this app's existing "only do work for what's on screen" principle. An
   // already-baked image just stays as-is (still correct, just not re-tuned for
@@ -4566,8 +4643,7 @@ function bakePolygon(layer, rec, maxSamplesOverride) {
   const outPoints = [];
   let added;
   if (rec.isGradient) {
-    const axes = ensureGradientAxes(rec);
-    added = fillPolygonWithHeat(layer, vertsLL, (lat, lng) => multiAxisGradientIntensity(lat, lng, axes), rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks, maxSamplesOverride, outPoints, fullBounds);
+    added = fillPolygonWithHeat(layer, vertsLL, (lat, lng) => multiAxisGradientIntensity(lat, lng, axes), rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks, maxSamplesOverride, outPoints, fullBounds, extension);
   } else {
     added = fillPolygonWithHeat(layer, vertsLL, () => rec.intensity, rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks, maxSamplesOverride, outPoints, fullBounds);
   }
@@ -4600,12 +4676,13 @@ function appendPolygonPoints(layer, rec, maxSamplesOverride) {
   if (baked !== null) return baked;
 
   const vertsLL = rec.vertices.map(v => L.latLng(v[0], v[1]));
-  let added;
+  let added, extension = null;
   if (rec.isGradient) {
     const axes = ensureGradientAxes(rec);
+    extension = computeAxisExtension(axes);
     added = fillPolygonWithHeat(
       layer, vertsLL, (lat, lng) => multiAxisGradientIntensity(lat, lng, axes),
-      rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks, maxSamplesOverride
+      rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks, maxSamplesOverride, undefined, undefined, extension
     );
   } else {
     added = fillPolygonWithHeat(layer, vertsLL, () => rec.intensity, rec.fillFraction, rec.id, rec.eraseMarks, rec.intensityOverrides, rec.boostMarks, maxSamplesOverride);
@@ -4614,7 +4691,8 @@ function appendPolygonPoints(layer, rec, maxSamplesOverride) {
   // this shape on a later pan/zoom that doesn't actually reveal any new area —
   // otherwise every pan would re-run the full grid scan for every visible polygon,
   // even when nothing about what's on screen changed.
-  rec._lastFillBounds = viewportClippedBounds(L.latLngBounds(vertsLL));
+  const fillBoundsLL = extension ? L.latLngBounds(vertsLL).extend(extension.bounds) : L.latLngBounds(vertsLL);
+  rec._lastFillBounds = viewportClippedBounds(fillBoundsLL);
   rec._lastFillZoom = map.getZoom();
   // See lastFillWasCoarsened's own comment — lets the Fill % popup control tell the
   // user when their chosen value couldn't actually be honored at the current view.
