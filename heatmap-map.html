@@ -613,7 +613,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v2.9</span>
+      <span class="version-tag">v3.0</span>
     </div>
   </div>
 </div>
@@ -690,6 +690,7 @@
       <h3>General info</h3>
       <p>This map is designed to offer a new modern cartographic interpretation to the Ukraine-Russia war by taking into account its main characteristics, fragmentation of the contact line and infiltrations and introducing a new map visualization technique: the heatmap opposed to plain polygons, which already some time ago has been suggested by some soldiers, that highlight how it's impossible to accurately describe what's happening at the front with only a red and gray zone without packing in them dozens of shades of situations, thereby making this system very confusing to viewers.</p>
       <p>In this case, the heatmap represents a gradient of Russian capability and actual frequency of infiltrations, ranging from one-time infiltrations, to occasional, and to frequent/consistent, everyday infiltrations.</p>
+      <p>I don't have precise enough information on every part of the front to say for certain whether or how often infiltrations are happening there — I still try to make the best use of what information I do have available. The heatmap is meant as an alternative, more nuanced representation of that same underlying data, not a pixel-perfect record of what's happening at any single point: it's still built on the same information the polygons-based representation uses.</p>
       <p>It is likely that the main system will be refined in the future.</p>
       <p>This map is also designed to offer users with a much wider range of tools to improve situational awareness and information.</p>
       <p>The frontline data is almost fully taken from <a href="https://t.me/DeepStateUA" target="_blank" rel="noopener" class="info-link">@DeepStateUA</a>, with me only slightly tweaking it to correct some areas according to my information, as well as low-quality/confusing drawings.</p>
@@ -1093,9 +1094,11 @@ function ensure3DMap() {
     // camera up abruptly ("teleporting") when it would otherwise clip below
     // the surface, and getting that close also runs past the resolution of
     // the imagery/terrain tiles, showing blank "map data not yet available"
-    // placeholders. Capping zoom keeps the camera just above the ground
-    // instead of letting it reach the range where either happens.
-    maxPitch: 85, maxZoom: 17, antialias: true, attributionControl: false
+    // placeholders. Kept close to the terrain source's own maxzoom (15,
+    // below) rather than the imagery's — past that, MapLibre is extending
+    // the terrain mesh past the DEM data it actually has, which is where
+    // both problems get worse, not just closer to the ground.
+    maxPitch: 85, maxZoom: 15, antialias: true, attributionControl: false
   });
   // Rotation/tilt is handled entirely by this file's own middle-mouse
   // handler below (to match the button convention already established), so
@@ -1104,6 +1107,28 @@ function ensure3DMap() {
   map3DGL.dragRotate.disable();
   map3DGL.touchZoomRotate.disableRotation();
   map3DGL.on('rotate', updateCompassNeedle);
+  // The draped overlay (heat/zone fills) is a flat image pinned to whatever
+  // patch of ground Leaflet's 2D view was showing the moment 3D opened — it
+  // does NOT grow or follow the camera on its own. Panning far enough (or
+  // fast enough that several pans happen before this settles) runs past its
+  // edge or views it from an angle steep enough to stretch its fixed pixel
+  // grid, both of which look like a torn/smeared patch of unfinished
+  // terrain. Keeping Leaflet's own view following the 3D camera and
+  // recapturing on every real pan/zoom keeps that image centered on
+  // whatever's actually on screen. Skipped for orbit/tilt-only moves (a
+  // bearing/pitch change alone doesn't shift which ground is in view) so a
+  // release from orbiting doesn't trigger a needless recapture.
+  map3DGL.on('moveend', () => {
+    if (!is3DActive) return;
+    const c3d = map3DGL.getCenter();
+    const z3d = map3DGL.getZoom();
+    const cLeaflet = map.getCenter();
+    const zLeaflet = map.getZoom();
+    const moved = Math.abs(c3d.lat - cLeaflet.lat) > 0.01 || Math.abs(c3d.lng - cLeaflet.lng) > 0.01 || Math.abs(z3d - zLeaflet) > 0.4;
+    if (!moved) return;
+    map.setView([c3d.lat, c3d.lng], Math.round(z3d), { animate: false });
+    updateOverlayImage();
+  });
   map3DGL.on('load', () => {
     map3DGL.addSource('terrainSource', {
       type: 'raster-dem',
@@ -1116,13 +1141,22 @@ function ensure3DMap() {
       tiles: ['https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png'],
       tileSize: 256, encoding: 'terrarium', maxzoom: 15
     });
-    // exaggeration 1.0, not amplified — this free public elevation dataset
-    // occasionally has a noisy pixel that decodes to a wildly wrong height,
-    // producing a tall spike/needle artifact that's most visible zoomed out
-    // (coarser terrain mesh = fewer vertices to average the bad one away)
-    // and settles down once you zoom in past it. Amplifying with a higher
-    // exaggeration only makes any such spike taller and more visible.
-    map3DGL.setTerrain({ source: 'terrainSource', exaggeration: 1.0 });
+    // Exaggeration ramps up with zoom instead of a flat 1.0 — this free
+    // public elevation dataset occasionally has a noisy pixel that decodes
+    // to a wildly wrong height, and the spike that produces is worst at low
+    // zoom (a coarse terrain mesh has few vertices to average the bad one
+    // away, and one bad pixel in a low-zoom DEM tile covers a huge area).
+    // Actual higher-zoom DEM tiles are generated separately, not just a
+    // crop of the low-zoom one, and usually don't carry the same error —
+    // which is exactly why zooming in was already making spikes disappear.
+    // Fading exaggeration in with zoom (near-flat at the zoom this editor
+    // opens 3D at, full strength once zoomed in close) suppresses that
+    // low-zoom spike window instead of just waiting for the user to zoom
+    // past it.
+    map3DGL.setTerrain({
+      source: 'terrainSource',
+      exaggeration: ['interpolate', ['linear'], ['zoom'], 5, 0, 9, 0.35, 13, 1]
+    });
     map3DGL.setSky({ 'sky-color': '#8bb8e8', 'horizon-color': '#eef2f7', 'fog-color': '#cbd8e6', 'fog-ground-blend': 0.5 });
     map3DReady = true;
     apply3DBasemapLayer(currentBasemapKey);
