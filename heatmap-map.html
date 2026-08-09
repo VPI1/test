@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Heatmap Layer Studio</title>
+<title>Ukraine Control Map | @Playfra0</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -613,7 +613,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v3.1</span>
+      <span class="version-tag">v3.2</span>
     </div>
   </div>
 </div>
@@ -1149,21 +1149,22 @@ function ensure3DMap() {
       tiles: ['https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png'],
       tileSize: 256, encoding: 'terrarium', maxzoom: 15
     });
-    // Exaggeration ramps up with zoom instead of a flat 1.0 — this free
-    // public elevation dataset occasionally has a noisy pixel that decodes
-    // to a wildly wrong height, and the spike that produces is worst at low
-    // zoom (a coarse terrain mesh has few vertices to average the bad one
-    // away, and one bad pixel in a low-zoom DEM tile covers a huge area).
-    // Actual higher-zoom DEM tiles are generated separately, not just a
-    // crop of the low-zoom one, and usually don't carry the same error —
-    // which is exactly why zooming in was already making spikes disappear.
-    // Fading exaggeration in with zoom (near-flat at the zoom this editor
-    // opens 3D at, full strength once zoomed in close) suppresses that
-    // low-zoom spike window instead of just waiting for the user to zoom
-    // past it.
+    // Exaggeration ramps up with zoom instead of a flat value, and is capped
+    // much lower than a "normal" terrain exaggeration (0.4, not 1.0) — this
+    // free public elevation dataset occasionally has a noisy pixel that
+    // decodes to a wildly wrong height. The camera's OWN zoom isn't the
+    // whole story here: tilted toward the horizon, the terrain far in the
+    // distance is still drawn from much coarser tiles than what's directly
+    // underfoot, regardless of how zoomed-in the camera itself is — a
+    // steep/horizon-grazing view keeps that coarser, more spike-prone
+    // terrain on screen even when close to the ground. Since exaggeration
+    // is one number applied to the whole visible terrain (there's no way to
+    // scale it down only for distant/low-detail tiles), the only reliable
+    // lever against that is keeping the ceiling low everywhere, trading some
+    // of the relief's drama for far fewer/shorter spikes at the horizon.
     map3DGL.setTerrain({
       source: 'terrainSource',
-      exaggeration: ['interpolate', ['linear'], ['zoom'], 5, 0, 9, 0.35, 13, 1]
+      exaggeration: ['interpolate', ['linear'], ['zoom'], 5, 0, 10, 0.15, 14, 0.4]
     });
     map3DGL.setSky({ 'sky-color': '#8bb8e8', 'horizon-color': '#eef2f7', 'fog-color': '#cbd8e6', 'fog-ground-blend': 0.5 });
     map3DReady = true;
