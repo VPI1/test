@@ -478,7 +478,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v2.5</span>
+      <span class="version-tag">v2.6</span>
     </div>
   </div>
 </div>
@@ -945,7 +945,13 @@ function ensure3DMap() {
   map3DGL.on('load', () => {
     map3DGL.addSource('terrainSource', {
       type: 'raster-dem',
-      tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+      // Virtual-hosted-style URL, not the path-style one used elsewhere in
+      // this file (see the terrain-analysis overlay) — that form works fine
+      // for plain <img> display, but MapLibre's terrain needs to read the
+      // actual pixel bytes to decode elevation, which needs a real CORS
+      // response, and only this hostname form of the same S3 bucket sends
+      // one; the path-style URL fails outright with a CORS error.
+      tiles: ['https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png'],
       tileSize: 256, encoding: 'terrarium', maxzoom: 15
     });
     map3DGL.setTerrain({ source: 'terrainSource', exaggeration: 1.3 });
