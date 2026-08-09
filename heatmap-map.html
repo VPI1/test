@@ -613,7 +613,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v3.3</span>
+      <span class="version-tag">v3.4</span>
     </div>
   </div>
 </div>
@@ -1083,41 +1083,72 @@ let map3DGL = null, map3DReady = false, pendingShow3D = false, overlaySyncArmed 
 const map3DContainerEl = document.getElementById('map3d');
 document.getElementById('mapWrap').appendChild(map._controlContainer);
 
-// Scaling exaggeration down (see setTerrain below) only shrinks a bad DEM
-// pixel's spike proportionally — a pixel that decodes to, say, 3000m still
-// produces an obvious tower at 0.4x exaggeration, just a shorter one.
-// Actually removing the spikes means catching the bad pixels themselves,
-// before MapLibre ever builds a mesh from them. This registers a custom
-// tile protocol that fetches each real elevation tile, decodes every pixel
-// with the same Terrarium formula MapLibre itself uses, and re-encodes any
-// pixel outside a physically sane elevation range for this theater (a wide
-// margin around actual Ukrainian terrain, which outside the Carpathians —
-// nowhere near the front line — doesn't go much above a few hundred
-// meters) back down to that range, leaving every normal pixel untouched.
-// Registered once, globally, before anything tries to use it.
-const TERRAIN_MIN_ELEV = -100, TERRAIN_MAX_ELEV = 600;
+// A single country-wide elevation ceiling (the first version of this) isn't
+// enough — a corrupted pixel reading, say, 450m still stands out as an
+// obvious spike over genuinely low-lying terrain near a river/reservoir,
+// even though 450m is well within "physically possible somewhere in
+// Ukraine." What actually marks a pixel as corrupted, regardless of its
+// absolute height, is that real terrain doesn't jump by hundreds of meters
+// between immediately ADJACENT DEM pixels — a bad pixel is a sharp, local
+// discontinuity against its own neighbors, even in flat terrain. So each
+// pixel is compared to the median of its 8 neighbors: if it's implausibly
+// far from that (or outside a generous global sanity range, as a cheap
+// first check), it's replaced with the neighbor median instead of its own
+// decoded value. Registered once, globally, before anything tries to use
+// the protocol it defines.
+const TERRAIN_GLOBAL_MIN = -100, TERRAIN_GLOBAL_MAX = 600, TERRAIN_LOCAL_DEVIATION = 30;
 maplibregl.addProtocol('ukwarmap-terrain', async (params) => {
   const realUrl = params.url.replace('ukwarmap-terrain://', 'https://elevation-tiles-prod.s3.amazonaws.com/terrarium/') + '.png';
   const response = await fetch(realUrl);
   if (!response.ok) throw new Error(`terrain tile fetch failed: ${response.status}`);
   const blob = await response.blob();
   const bitmap = await createImageBitmap(blob);
+  const w = bitmap.width, h = bitmap.height;
   const canvas = document.createElement('canvas');
-  canvas.width = bitmap.width;
-  canvas.height = bitmap.height;
+  canvas.width = w;
+  canvas.height = h;
   const ctx = canvas.getContext('2d');
   ctx.drawImage(bitmap, 0, 0);
-  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const imgData = ctx.getImageData(0, 0, w, h);
   const d = imgData.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const elev = (d[i] * 256 + d[i + 1] + d[i + 2] / 256) - 32768;
-    if (elev < TERRAIN_MIN_ELEV || elev > TERRAIN_MAX_ELEV) {
-      const clamped = Math.round(Math.min(TERRAIN_MAX_ELEV, Math.max(TERRAIN_MIN_ELEV, elev))) + 32768;
-      d[i] = Math.floor(clamped / 256);
-      d[i + 1] = clamped % 256;
-      d[i + 2] = 0;
+
+  // Decoded into a separate array first — the neighbor-median check below
+  // needs every pixel's ORIGINAL value, not ones a nearby pixel's own pass
+  // may have already rewritten earlier in the same loop.
+  const elev = new Float32Array(w * h);
+  for (let p = 0; p < w * h; p++) {
+    const i = p * 4;
+    elev[p] = (d[i] * 256 + d[i + 1] + d[i + 2] / 256) - 32768;
+  }
+
+  const neighborBuf = new Float32Array(8);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      let n = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+          neighborBuf[n++] = elev[ny * w + nx];
+        }
+      }
+      const neighbors = Array.from(neighborBuf.subarray(0, n)).sort((a, b) => a - b);
+      const median = neighbors[Math.floor(n / 2)];
+      const self = elev[p];
+      const globallyBad = self < TERRAIN_GLOBAL_MIN || self > TERRAIN_GLOBAL_MAX;
+      const locallyBad = Math.abs(self - median) > TERRAIN_LOCAL_DEVIATION;
+      if (globallyBad || locallyBad) {
+        const i = p * 4;
+        const v = Math.round(median) + 32768;
+        d[i] = Math.floor(v / 256);
+        d[i + 1] = v % 256;
+        d[i + 2] = 0;
+      }
     }
   }
+
   ctx.putImageData(imgData, 0, 0);
   const outBlob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
   return { data: await outBlob.arrayBuffer() };
