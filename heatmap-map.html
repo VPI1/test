@@ -612,7 +612,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v2.6</span>
+      <span class="version-tag">v2.7</span>
     </div>
   </div>
 </div>
@@ -1087,7 +1087,14 @@ function ensure3DMap() {
     container: 'map3d',
     style: { version: 8, sources: {}, layers: [] },
     center: [0, 0], zoom: 2, pitch: 60, bearing: 0,
-    maxPitch: 85, antialias: true, attributionControl: false
+    // maxZoom caps how close the camera can get to the ground — without it,
+    // MapLibre's own camera-vs-terrain collision handling can shove the
+    // camera up abruptly ("teleporting") when it would otherwise clip below
+    // the surface, and getting that close also runs past the resolution of
+    // the imagery/terrain tiles, showing blank "map data not yet available"
+    // placeholders. Capping zoom keeps the camera just above the ground
+    // instead of letting it reach the range where either happens.
+    maxPitch: 85, maxZoom: 17, antialias: true, attributionControl: false
   });
   // Rotation/tilt is handled entirely by this file's own middle-mouse
   // handler below (to match the button convention already established), so
@@ -1095,6 +1102,7 @@ function ensure3DMap() {
   // avoid two conflicting gestures fighting over the same camera.
   map3DGL.dragRotate.disable();
   map3DGL.touchZoomRotate.disableRotation();
+  map3DGL.on('rotate', updateCompassNeedle);
   map3DGL.on('load', () => {
     map3DGL.addSource('terrainSource', {
       type: 'raster-dem',
@@ -1107,17 +1115,50 @@ function ensure3DMap() {
       tiles: ['https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png'],
       tileSize: 256, encoding: 'terrarium', maxzoom: 15
     });
-    map3DGL.setTerrain({ source: 'terrainSource', exaggeration: 1.3 });
-    map3DGL.addSource('esriImagery', {
-      type: 'raster',
-      tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
-      tileSize: 256
-    });
-    map3DGL.addLayer({ id: 'esriImageryLayer', type: 'raster', source: 'esriImagery' });
+    // exaggeration 1.0, not amplified — this free public elevation dataset
+    // occasionally has a noisy pixel that decodes to a wildly wrong height,
+    // producing a tall spike/needle artifact that's most visible zoomed out
+    // (coarser terrain mesh = fewer vertices to average the bad one away)
+    // and settles down once you zoom in past it. Amplifying with a higher
+    // exaggeration only makes any such spike taller and more visible.
+    map3DGL.setTerrain({ source: 'terrainSource', exaggeration: 1.0 });
     map3DGL.setSky({ 'sky-color': '#8bb8e8', 'horizon-color': '#eef2f7', 'fog-color': '#cbd8e6', 'fog-ground-blend': 0.5 });
     map3DReady = true;
+    apply3DBasemapLayer(currentBasemapKey);
     if (pendingShow3D) { pendingShow3D = false; refresh3DView(); }
   });
+}
+
+// Mirrors the 2D basemap options (see `basemaps`) as raw XYZ tile URL
+// templates MapLibre's raster sources can use directly — {z}/{x}/{y} (in
+// whatever order each provider expects) get substituted the same way
+// Leaflet does it, so these are the exact same URLs, just not wrapped in
+// L.tileLayer. esriDarkGray is the one two-layer case (base + label
+// reference), handled as a second source/layer below.
+const basemaps3D = {
+  google: ['https://mt0.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', 'https://mt2.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', 'https://mt3.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'],
+  ghybrid: ['https://mt0.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', 'https://mt2.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', 'https://mt3.google.com/vt/lyrs=y&x={x}&y={y}&z={z}'],
+  osm: ['https://a.tile.openstreetmap.org/{z}/{x}/{y}.png', 'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png', 'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'],
+  esri: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+  esriDarkGray: ['https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}'],
+  esriTopo: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}']
+};
+const ESRI_DARK_GRAY_REFERENCE_TILES_3D = ['https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}'];
+
+// Called on the initial 3D open (with whichever basemap 2D is currently
+// showing) and again any time setBasemap() runs while 3D is active — same
+// underlying imagery choice in both views, kept in sync automatically.
+function apply3DBasemapLayer(key) {
+  if (!map3DGL) return;
+  ['esriImageryLayer', 'esriImageryLayer2'].forEach(id => { if (map3DGL.getLayer(id)) map3DGL.removeLayer(id); });
+  ['esriImagery', 'esriImagery2'].forEach(id => { if (map3DGL.getSource(id)) map3DGL.removeSource(id); });
+  const beforeId = map3DGL.getLayer('leafletOverlayLayer') ? 'leafletOverlayLayer' : undefined;
+  map3DGL.addSource('esriImagery', { type: 'raster', tiles: basemaps3D[key], tileSize: 256 });
+  map3DGL.addLayer({ id: 'esriImageryLayer', type: 'raster', source: 'esriImagery' }, beforeId);
+  if (key === 'esriDarkGray') {
+    map3DGL.addSource('esriImagery2', { type: 'raster', tiles: ESRI_DARK_GRAY_REFERENCE_TILES_3D, tileSize: 256 });
+    map3DGL.addLayer({ id: 'esriImageryLayer2', type: 'raster', source: 'esriImagery2' }, beforeId);
+  }
 }
 
 // Flattens every Canvas Leaflet has drawn for this editor's own content
@@ -1186,10 +1227,39 @@ const Toggle3DControl = L.Control.extend({
 const toggle3DControl = new Toggle3DControl();
 map.addControl(toggle3DControl);
 
+// Compass — only meaningful in 3D (2D never rotates), so it's hidden until
+// toggle3DView shows it. Lives in the same reparented Leaflet control
+// container as the legend and the 3D/2D button (see the comment above that
+// reparenting call), so it gets the same "always above the WebGL view, always
+// clickable" guarantee for free. The needle is a separate inner element so
+// CSS can rotate just it, not the whole button/frame.
+const CompassControl = L.Control.extend({
+  options: { position: 'topright' },
+  onAdd: function() {
+    const btn = L.DomUtil.create('div', 'basemap-toggle-btn');
+    btn.style.display = 'none';
+    btn.title = 'Reset to north';
+    btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.5"/><g class="compass-needle" style="transform-origin:12px 12px;"><polygon points="12,4.5 15,12 12,19.5 9,12" fill="currentColor" stroke="none"/></g></svg>';
+    L.DomEvent.on(btn, 'click', L.DomEvent.stop);
+    L.DomEvent.on(btn, 'click', () => { if (map3DGL) map3DGL.easeTo({ bearing: 0, duration: 400 }); });
+    L.DomEvent.disableClickPropagation(btn);
+    this._btn = btn;
+    this._needle = btn.querySelector('.compass-needle');
+    return btn;
+  }
+});
+const compassControl = new CompassControl();
+map.addControl(compassControl);
+function updateCompassNeedle() {
+  if (!map3DGL || !compassControl._needle) return;
+  compassControl._needle.style.transform = `rotate(${-map3DGL.getBearing()}deg)`;
+}
+
 function toggle3DView(on) {
   is3DActive = on;
   toggle3DControl._btn.textContent = on ? '2D' : '3D';
   toggle3DControl._btn.classList.toggle('active-toggle', on);
+  compassControl._btn.style.display = on ? 'flex' : 'none';
   if (on) {
     setMode('pan'); // backs out of any paint/polygon/gradient/erase/adjust/correct tool, and (via setMode's own toolMode-clearing) ruler/draw/coord too
     map.dragging.disable();
@@ -1200,6 +1270,7 @@ function toggle3DView(on) {
     map3DContainerEl.classList.add('active');
     ensure3DMap();
     refresh3DView();
+    updateCompassNeedle();
   } else {
     map3DContainerEl.classList.remove('active');
     map.dragging.enable();
@@ -1213,10 +1284,11 @@ function toggle3DView(on) {
 // Left-drag pan and scroll-to-zoom are MapLibre's own native handlers — a
 // genuine interactive map instance needs no reimplementing of either.
 // Middle-drag orbits (bearing) + adjusts tilt (pitch) instead, matching the
-// button this editor already exposes for it. Sign is flipped from the
-// earlier CSS-tilt version per direct feedback that its rotation felt
-// backwards: dragging right now turns the view right, dragging down now
-// tips the camera further toward the horizon (steeper), not away from it.
+// button this editor already exposes for it. Dragging down tips the camera
+// further toward the horizon (steeper), not away from it. Bearing sign is
+// set so dragging right turns the view clockwise and dragging left turns it
+// counterclockwise, per direct feedback confirming that direction (the
+// earlier build had it backwards).
 let orbit3DState = null;
 map3DContainerEl.addEventListener('mousedown', (e) => {
   if (!is3DActive || !map3DGL) return;
@@ -1229,7 +1301,7 @@ map3DContainerEl.addEventListener('mousedown', (e) => {
 document.addEventListener('mousemove', (e) => {
   if (!orbit3DState || !map3DGL) return;
   const dx = e.clientX - orbit3DState.x, dy = e.clientY - orbit3DState.y;
-  const bearing = orbit3DState.bearing - dx * 0.3;
+  const bearing = orbit3DState.bearing + dx * 0.3;
   const pitch = Math.min(85, Math.max(0, orbit3DState.pitch + dy * 0.3));
   map3DGL.jumpTo({ bearing, pitch });
 });
@@ -1432,6 +1504,7 @@ function setBasemap(key) {
   document.querySelectorAll('.basemap-control button').forEach(b => {
     b.classList.toggle('active', b.dataset.key === key);
   });
+  apply3DBasemapLayer(key); // no-op if 3D has never been opened (map3DGL still null)
 }
 
 /* ---------------- Legend (Red/Blue "infiltration frequency" palettes only) ---------------- */
