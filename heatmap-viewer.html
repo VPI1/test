@@ -107,6 +107,26 @@
      share a stacking context with inside #map; here it needs to beat
      #map3d's z-index:1 directly. */
   #mapWrap > .leaflet-control-container{z-index:2;}
+  /* A plain viewport-centered overlay, not tied to either #map or #map3d
+     specifically — since it just marks the middle of whatever's currently
+     showing, it works unchanged for both. Sits above both views but below
+     the reparented Leaflet controls, though the two never overlap in
+     practice (center of screen vs. the corners). pointer-events:none on the
+     wrapper lets clicks fall through to the map everywhere except the
+     .ch-hotspot circle, which explicitly opts back in. */
+  #crosshair{position:absolute;top:50%;left:50%;width:0;height:0;z-index:2;display:none;pointer-events:none;}
+  #crosshair.active{display:block;}
+  .ch-line{position:absolute;background:var(--text);opacity:.6;box-shadow:0 0 2px #0008;}
+  .ch-h{width:22px;height:1px;top:0;left:-11px;}
+  .ch-v{width:1px;height:22px;top:-11px;left:0;}
+  /* Invisible except on hover/tap — radius (15px) is slightly larger than
+     the crosshair's own arm length (11px) per the spec, so the hotspot is
+     easy to land on without being so large it feels arbitrary. */
+  .ch-hotspot{
+    position:absolute;top:-15px;left:-15px;width:30px;height:30px;border-radius:50%;
+    pointer-events:auto;cursor:pointer;background:transparent;transition:background .12s;
+  }
+  .ch-hotspot:hover, .ch-hotspot.tapped{background:#ffffff26;}
   .basemap-toggle-btn.active-toggle{background:var(--accent);color:#fff;}
   /* Leaflet's own scale control sits 5px closer to the edge than the
      .legend-control boxes stacked above it in the same bottom-left corner —
@@ -384,6 +404,11 @@
   <div id="mapWrap">
     <div id="map"></div>
     <div id="map3d"></div>
+    <div id="crosshair">
+      <div class="ch-line ch-h"></div>
+      <div class="ch-line ch-v"></div>
+      <div class="ch-hotspot" title="View coordinates at the crosshair"></div>
+    </div>
   </div>
   <div id="sidebar">
     <div class="sidebar-header">
@@ -479,7 +504,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v3.5</span>
+      <span class="version-tag">v3.6</span>
     </div>
   </div>
 </div>
@@ -1222,11 +1247,70 @@ function updateCompassNeedle() {
   compassControl._needle.style.transform = `rotate(${-map3DGL.getBearing()}deg)`;
 }
 
+// "Stand here" — drops the camera to eye height (1.8m, an average adult) at
+// wherever the 3D view is currently centered, using MapLibre's
+// FreeCameraOptions (a real lng/lat/altitude position + look direction,
+// distinct from the normal center/zoom/pitch/bearing camera model the rest
+// of this file drives). Only meaningful in 3D, so hidden until toggle3DView
+// shows it, same as the compass. Movement stays off (no walking) — this is
+// a "what would a person standing here actually see" check, not a walking
+// simulator — so drag-pan and scroll-zoom are switched off while active;
+// only the existing middle-drag look-around still works, repointed at the
+// FreeCamera's orientation instead of the normal camera's.
+let groundViewActive = false;
+let groundViewPitch = 90, groundViewBearing = 0;
+let groundViewPrevState = null;
+const GroundViewControl = L.Control.extend({
+  options: { position: 'topright' },
+  onAdd: function() {
+    const btn = L.DomUtil.create('div', 'basemap-toggle-btn');
+    btn.style.display = 'none';
+    btn.title = 'Stand at ground level here (eye height of an average 1.8m adult)';
+    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2.5"/><path d="M12 8v7"/><path d="M8 22l4-7 4 7"/><path d="M8.5 12h7"/></svg>';
+    L.DomEvent.on(btn, 'click', L.DomEvent.stop);
+    L.DomEvent.on(btn, 'click', () => { if (groundViewActive) exitGroundView(); else enterGroundView(); });
+    L.DomEvent.disableClickPropagation(btn);
+    this._btn = btn;
+    return btn;
+  }
+});
+const groundViewControl = new GroundViewControl();
+map.addControl(groundViewControl);
+
+function enterGroundView() {
+  if (!map3DGL || groundViewActive) return;
+  const c = map3DGL.getCenter();
+  const groundElev = map3DGL.queryTerrainElevation(c) || 0;
+  groundViewPrevState = { center: [c.lng, c.lat], zoom: map3DGL.getZoom(), pitch: map3DGL.getPitch(), bearing: map3DGL.getBearing() };
+  groundViewBearing = map3DGL.getBearing();
+  groundViewPitch = 90; // looking level at the horizon, like a standing person
+  const camera = map3DGL.getFreeCameraOptions();
+  camera.position = maplibregl.MercatorCoordinate.fromLngLat([c.lng, c.lat], groundElev + 1.8);
+  camera.setPitchBearing(groundViewPitch, groundViewBearing);
+  map3DGL.setFreeCameraOptions(camera);
+  groundViewActive = true;
+  map3DGL.dragPan.disable();
+  map3DGL.scrollZoom.disable();
+  groundViewControl._btn.classList.add('active-toggle');
+  groundViewControl._btn.title = 'Exit ground-level view';
+}
+
+function exitGroundView() {
+  if (!groundViewActive) return;
+  groundViewActive = false;
+  if (groundViewPrevState) map3DGL.jumpTo(groundViewPrevState);
+  map3DGL.dragPan.enable();
+  map3DGL.scrollZoom.enable();
+  groundViewControl._btn.classList.remove('active-toggle');
+  groundViewControl._btn.title = 'Stand at ground level here (eye height of an average 1.8m adult)';
+}
+
 function toggle3DView(on) {
   is3DActive = on;
   toggle3DControl._btn.textContent = on ? '2D' : '3D';
   toggle3DControl._btn.classList.toggle('active-toggle', on);
   compassControl._btn.style.display = on ? 'flex' : 'none';
+  groundViewControl._btn.style.display = on ? 'flex' : 'none';
   if (on) {
     if (typeof toolMode !== 'undefined' && toolMode !== 'none') setToolMode('none');
     map.dragging.disable();
@@ -1239,6 +1323,7 @@ function toggle3DView(on) {
     refresh3DView();
     updateCompassNeedle();
   } else {
+    if (groundViewActive) exitGroundView();
     map3DContainerEl.classList.remove('active');
     if (toolMode !== 'ruler' && toolMode !== 'draw') {
       map.dragging.enable();
@@ -1257,12 +1342,15 @@ function toggle3DView(on) {
 // further toward the horizon (steeper), not away from it. Bearing sign is
 // set so dragging right turns the view clockwise and dragging left turns it
 // counterclockwise, per direct feedback confirming that direction (the
-// earlier build had it backwards).
+// earlier build had it backwards). While standing at ground level the same
+// gesture instead repoints the FreeCamera's look direction — a much wider
+// pitch range (20–160, not 0–85) since a standing person can look well past
+// the horizon in either direction, up toward the sky or down at their feet.
 let orbit3DState = null;
 map3DContainerEl.addEventListener('mousedown', (e) => {
   if (!is3DActive || !map3DGL) return;
   if (e.button === 1) {
-    orbit3DState = { x: e.clientX, y: e.clientY, bearing: map3DGL.getBearing(), pitch: map3DGL.getPitch() };
+    orbit3DState = { x: e.clientX, y: e.clientY, bearing: groundViewActive ? groundViewBearing : map3DGL.getBearing(), pitch: groundViewActive ? groundViewPitch : map3DGL.getPitch() };
     map3DContainerEl.classList.add('orbiting');
     e.preventDefault();
   }
@@ -1271,14 +1359,61 @@ document.addEventListener('mousemove', (e) => {
   if (!orbit3DState || !map3DGL) return;
   const dx = e.clientX - orbit3DState.x, dy = e.clientY - orbit3DState.y;
   const bearing = orbit3DState.bearing + dx * 0.3;
-  const pitch = Math.min(85, Math.max(0, orbit3DState.pitch + dy * 0.3));
-  map3DGL.jumpTo({ bearing, pitch });
+  if (groundViewActive) {
+    groundViewBearing = bearing;
+    groundViewPitch = Math.min(160, Math.max(20, orbit3DState.pitch + dy * 0.3));
+    const camera = map3DGL.getFreeCameraOptions();
+    camera.setPitchBearing(groundViewPitch, groundViewBearing);
+    map3DGL.setFreeCameraOptions(camera);
+  } else {
+    const pitch = Math.min(85, Math.max(0, orbit3DState.pitch + dy * 0.3));
+    map3DGL.jumpTo({ bearing, pitch });
+  }
 });
 document.addEventListener('mouseup', () => {
   if (orbit3DState) { orbit3DState = null; map3DContainerEl.classList.remove('orbiting'); }
 });
 map3DContainerEl.addEventListener('contextmenu', (e) => { if (is3DActive) e.preventDefault(); });
 map3DContainerEl.addEventListener('auxclick', (e) => { if (is3DActive && e.button === 1) e.preventDefault(); });
+
+/* ---------------- Crosshair ----------------
+   A plain viewport-centered marker (see #crosshair in the stylesheet) with
+   one interactive spot: an invisible circle around its intersection that,
+   on hover/tap, highlights slightly and opens the same coordinate popup
+   used elsewhere (right-click, the Coords tool, mobile long-press) for
+   whatever's currently at the exact center of the map — since the
+   crosshair never moves from center, that's always map.getCenter(), in
+   both 2D and 3D (MapLibre's own `center` is defined the same way, as the
+   point that projects to screen-center, even while pitched). */
+const CROSSHAIR_STORAGE_KEY = 'heatmapViewerCrosshair_v1';
+const crosshairEl = document.getElementById('crosshair');
+const crosshairHotspot = crosshairEl.querySelector('.ch-hotspot');
+function setCrosshairVisible(on) {
+  crosshairEl.classList.toggle('active', on);
+  crosshairToggleControl._btn.classList.toggle('active-toggle', on);
+  try { localStorage.setItem(CROSSHAIR_STORAGE_KEY, on ? '1' : '0'); } catch (e) {}
+}
+const CrosshairToggleControl = L.Control.extend({
+  options: { position: 'topright' },
+  onAdd: function() {
+    const btn = L.DomUtil.create('div', 'basemap-toggle-btn');
+    btn.title = 'Toggle crosshair';
+    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><line x1="12" y1="2" x2="12" y2="6.5"/><line x1="12" y1="17.5" x2="12" y2="22"/><line x1="2" y1="12" x2="6.5" y2="12"/><line x1="17.5" y1="12" x2="22" y2="12"/></svg>';
+    L.DomEvent.on(btn, 'click', L.DomEvent.stop);
+    L.DomEvent.on(btn, 'click', () => setCrosshairVisible(!crosshairEl.classList.contains('active')));
+    L.DomEvent.disableClickPropagation(btn);
+    this._btn = btn;
+    return btn;
+  }
+});
+const crosshairToggleControl = new CrosshairToggleControl();
+map.addControl(crosshairToggleControl);
+try { setCrosshairVisible(localStorage.getItem(CROSSHAIR_STORAGE_KEY) === '1'); } catch (e) {}
+crosshairHotspot.addEventListener('click', () => {
+  crosshairHotspot.classList.add('tapped');
+  setTimeout(() => crosshairHotspot.classList.remove('tapped'), 200);
+  openCoordPopupAt(map.getCenter());
+});
 
 /* ---------------- Mobile / desktop layout toggle ----------------
    See heatmap-map.html's own copy of this (kept in sync) for the full
@@ -3058,6 +3193,35 @@ map.on('contextmenu', (e) => {
   openCoordPopupAt(e.latlng);
 });
 map.on('click', (e) => { if (toolMode === 'coord') openCoordPopupAt(e.latlng); });
+
+// Elevation-on-click for the terrain analysis overlay — reuses the
+// elevation data that overlay already decoded per tile (tile._elevData,
+// see the Terrain analysis overlay section) rather than fetching/decoding
+// anything a second time. Only active while that overlay is actually
+// showing, and only in plain pan mode so it doesn't fire while some other
+// tool (ruler, draw, coords...) is using left-click for its own purpose.
+function buildElevPopupHtml(elev) {
+  return `<div class="coord-popup" style="min-width:120px;"><div class="cp-row"><span class="cp-label">Elev.</span><span class="cp-val">${Math.round(elev)} m</span></div></div>`;
+}
+map.on('click', (e) => {
+  if (toolMode !== 'none' || !topoTileLayer || !map.hasLayer(topoTileLayer)) return;
+  const zoom = Math.round(map.getZoom());
+  const point = map.project(e.latlng, zoom);
+  const tileSize = topoTileLayer.getTileSize();
+  const tileX = Math.floor(point.x / tileSize.x), tileY = Math.floor(point.y / tileSize.y);
+  let foundTile = null;
+  if (topoTileLayer._tiles) {
+    for (const key in topoTileLayer._tiles) {
+      const t = topoTileLayer._tiles[key];
+      if (t.coords && t.coords.x === tileX && t.coords.y === tileY && t.coords.z === zoom && t.el._elevData) { foundTile = t.el; break; }
+    }
+  }
+  if (!foundTile) return; // that tile hasn't finished loading/decoding yet
+  const px = Math.floor(point.x - tileX * tileSize.x), py = Math.floor(point.y - tileY * tileSize.y);
+  const elev = foundTile._elevData[py * tileSize.x + px];
+  if (elev === undefined) return;
+  L.popup({ className: 'polygon-edit-popup' }).setLatLng(e.latlng).setContent(buildElevPopupHtml(elev)).openOn(map);
+});
 
 // A mobile long-press stand-in for right-click: hold a finger still on the
 // map for COORD_LONG_PRESS_MS without moving more than the tolerance, and it
