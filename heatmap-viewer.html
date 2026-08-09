@@ -226,6 +226,8 @@
   .draw-swatch.active{outline:2px solid var(--text);outline-offset:2px;}
   .draw-actions-row{display:flex;gap:5px;}
   .draw-actions-row button{flex:1;}
+  #map.drawing-cursor{cursor:crosshair;}
+  #map.drawing-cursor .leaflet-interactive{cursor:crosshair!important;}
 
   /* ---- Floating ruler panel ---- */
   #rulerPanel{
@@ -385,7 +387,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v1.3</span>
+      <span class="version-tag">v1.4</span>
     </div>
   </div>
 </div>
@@ -409,12 +411,12 @@
   </div>
   <div class="draw-opts-row">
     <label>Color</label>
-    <input type="color" id="drawColor" value="#ffffff">
+    <input type="color" id="drawColor" value="#ff0000">
     <label>Size</label>
     <input type="range" id="drawSize" min="1" max="12" value="3">
   </div>
   <div class="draw-swatch-row" id="drawSwatchRow">
-    <button class="draw-swatch" data-color="#ff3b30" style="background:#ff3b30;" title="Red"></button>
+    <button class="draw-swatch active" data-color="#ff0000" style="background:#ff0000;" title="Red"></button>
     <button class="draw-swatch" data-color="#ff8a80" style="background:#ff8a80;" title="Salmon"></button>
     <button class="draw-swatch" data-color="#4a72f5" style="background:#4a72f5;" title="Blue"></button>
     <button class="draw-swatch" data-color="#7fc4f0" style="background:#7fc4f0;" title="Sky blue"></button>
@@ -422,10 +424,11 @@
     <button class="draw-swatch" data-color="#3a3a3a" style="background:#3a3a3a;" title="Dark gray"></button>
     <button class="draw-swatch" data-color="#ffe066" style="background:#ffe066;" title="Yellow"></button>
     <button class="draw-swatch" data-color="#ffab40" style="background:#ffab40;" title="Orange"></button>
-    <button class="draw-swatch active" data-color="#ffffff" style="background:#ffffff;" title="White"></button>
+    <button class="draw-swatch" data-color="#ffffff" style="background:#ffffff;" title="White"></button>
   </div>
   <div class="draw-actions-row">
-    <button id="btnDrawUndo" title="Undo last stroke"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg> Undo</button>
+    <button id="btnDrawUndo" title="Undo last stroke (Ctrl+Z)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg> Undo</button>
+    <button id="btnDrawRedo" title="Redo (Ctrl+Shift+Z)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg> Redo</button>
     <button id="btnDrawClear" title="Erase all local drawings"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg> Clear</button>
     <button id="btnDrawSave" title="Download your sketch as a GeoJSON file"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M4 19h16"/></svg> Save</button>
   </div>
@@ -465,6 +468,17 @@
     </div>
     <div class="modal-actions" style="justify-content:flex-end;">
       <button id="btnCloseInfo" class="primary">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="confirmModal">
+  <div class="modal" style="width:300px;">
+    <h2 id="confirmModalTitle">Confirm</h2>
+    <p id="confirmModalBody" style="font-size:12.5px;line-height:1.55;color:var(--text);margin:0;"></p>
+    <div class="modal-actions">
+      <button id="confirmModalCancel">Cancel</button>
+      <button id="confirmModalOk"></button>
     </div>
   </div>
 </div>
@@ -856,6 +870,31 @@ const InfoControl = L.Control.extend({
 map.addControl(new InfoControl());
 document.getElementById('btnCloseInfo').addEventListener('click', () => infoModal.classList.remove('open'));
 infoModal.addEventListener('click', (e) => { if (e.target === infoModal) infoModal.classList.remove('open'); });
+
+/* ---------------- Themed confirm modal ----------------
+   A styled stand-in for window.confirm() (reuses the same .modal-overlay/.open
+   pattern as every other modal here) — native confirm() dialogs are chrome the
+   browser draws itself, so they never match the map's own look. */
+const confirmModal = document.getElementById('confirmModal');
+const confirmModalBody = document.getElementById('confirmModalBody');
+const confirmModalOk = document.getElementById('confirmModalOk');
+function showConfirmModal(message, onConfirm, okLabel) {
+  confirmModalBody.textContent = message;
+  confirmModalOk.textContent = okLabel || 'Delete';
+  confirmModal.classList.add('open');
+  function cleanup() {
+    confirmModal.classList.remove('open');
+    confirmModalOk.removeEventListener('click', onOk);
+    document.getElementById('confirmModalCancel').removeEventListener('click', onCancel);
+    confirmModal.removeEventListener('click', onOverlay);
+  }
+  function onOk() { cleanup(); onConfirm(); }
+  function onCancel() { cleanup(); }
+  function onOverlay(e) { if (e.target === confirmModal) cleanup(); }
+  confirmModalOk.addEventListener('click', onOk);
+  document.getElementById('confirmModalCancel').addEventListener('click', onCancel);
+  confirmModal.addEventListener('click', onOverlay);
+}
 
 function setBasemap(key) {
   if (key === currentBasemapKey) return;
@@ -2231,6 +2270,7 @@ function setToolMode(newMode) {
   btnDraw.classList.toggle('active-toggle', toolMode === 'draw');
   drawToolbar.style.display = toolMode === 'draw' ? 'flex' : 'none';
   rulerPanel.style.display = (toolMode === 'ruler' || rulerPoints.length) ? 'flex' : 'none';
+  map.getContainer().classList.toggle('drawing-cursor', toolMode === 'draw');
   if (toolMode !== 'none') {
     map.dragging.disable();
     map.doubleClickZoom.disable();
@@ -2242,6 +2282,25 @@ function setToolMode(newMode) {
 }
 btnRuler.addEventListener('click', () => setToolMode(toolMode === 'ruler' ? 'none' : 'ruler'));
 btnDraw.addEventListener('click', () => setToolMode(toolMode === 'draw' ? 'none' : 'draw'));
+
+// Ctrl+Z/Ctrl+Shift+Z (and the Ctrl+Y alias) target the draw tool's own
+// undo/redo stack (see drawUndo/drawRedo below) — the viewer has no other
+// undo history to conflict with, unlike the editor's layer-editing one.
+document.addEventListener('keydown', (e) => {
+  const tag = (document.activeElement && document.activeElement.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  if (toolMode !== 'draw') return;
+  const key = e.key.toLowerCase();
+  if ((e.ctrlKey || e.metaKey) && key === 'z' && !e.shiftKey) {
+    e.preventDefault();
+    drawUndo();
+  } else if ((e.ctrlKey || e.metaKey) && ((key === 'z' && e.shiftKey) || key === 'y')) {
+    e.preventDefault();
+    drawRedo();
+  } else if (key === 'escape' && drawingInProgress) {
+    cancelCurrentDrawing();
+  }
+});
 
 /* ---------------- Ruler tool (distance + area) ---------------- */
 let rulerPoints = [];
@@ -2324,14 +2383,16 @@ document.getElementById('btnRulerClear').addEventListener('click', () => { ruler
 
 /* ---------------- Draw tool (local scratchpad only) ----------------
    Not part of the published heatmap-data.json — purely local to this browser,
-   persisted via localStorage so a reload doesn't lose it, never synced anywhere. */
+   kept in memory for the current session only (nothing written to
+   localStorage), never synced anywhere. Reloading or closing the map clears
+   these by design. */
 let drawTool = 'pencil';
 let localDrawings = [];
+let drawRedoStack = [];
 let drawingInProgress = null;
 const drawLayerGroup = L.layerGroup().addTo(map);
 const drawColorInput = document.getElementById('drawColor');
 const drawSizeInput = document.getElementById('drawSize');
-const DRAW_STORAGE_KEY = 'heatmapViewerLocalDrawings_v1';
 
 document.querySelectorAll('.draw-swatch').forEach(sw => {
   sw.addEventListener('click', () => {
@@ -2345,12 +2406,10 @@ drawColorInput.addEventListener('input', () => {
   });
 });
 
-function saveDrawingsToStorage() {
-  try {
-    localStorage.setItem(DRAW_STORAGE_KEY, JSON.stringify(localDrawings.map(({ _layer, previewLayer, ...rest }) => rest)));
-  } catch (e) { /* storage full/unavailable — drawings still work this session, just won't persist */ }
-}
-
+// Recomputed on every rAF-coalesced preview tick (see updateDrawingPreview) so
+// the smoothing is visible live while dragging, not just once the stroke is
+// finalized — d.points itself stays raw until mouseup so the final smoothing
+// pass has the full-resolution source to work from.
 function smoothPencilPoints(points, segmentsPerSpan) {
   if (points.length < 3) return points;
   segmentsPerSpan = segmentsPerSpan || 8;
@@ -2397,16 +2456,6 @@ function renderDrawing(d) {
   return layer;
 }
 
-function loadDrawingsFromStorage() {
-  try {
-    const raw = localStorage.getItem(DRAW_STORAGE_KEY);
-    if (!raw) return;
-    localDrawings = JSON.parse(raw);
-    localDrawings.forEach(renderDrawing);
-  } catch (e) { localDrawings = []; }
-}
-loadDrawingsFromStorage();
-
 document.querySelectorAll('.draw-tool-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     drawTool = btn.dataset.drawTool;
@@ -2414,9 +2463,12 @@ document.querySelectorAll('.draw-tool-btn').forEach(btn => {
   });
 });
 
-map.on('mousedown', (e) => {
-  if (toolMode !== 'draw') return;
-  const latlng = e.latlng;
+// mousedown/mousemove/mouseup and touchstart/touchmove/touchend both funnel
+// into these three functions so mouse and touch input behave identically —
+// Leaflet's own map events only normalize touch into synthetic mouse events
+// for simple taps, not drags, so a real touch listener (below) is needed for
+// drawing to work by dragging a finger on mobile.
+function startDrawing(latlng) {
   const color = drawColorInput.value, size = +drawSizeInput.value;
   if (drawTool === 'pencil') {
     drawingInProgress = { type: 'pencil', points: [[latlng.lat, latlng.lng]], color, size };
@@ -2431,17 +2483,17 @@ map.on('mousedown', (e) => {
     drawingInProgress = { type: 'rectangle', corner1: [latlng.lat, latlng.lng], bounds: [[latlng.lat, latlng.lng], [latlng.lat, latlng.lng]], color, size };
     drawingInProgress.previewLayer = L.rectangle(drawingInProgress.bounds, { color, weight: size, fillOpacity: 0.08 }).addTo(drawLayerGroup);
   }
-});
-map.on('mousemove', (e) => {
-  if (toolMode !== 'draw' || !drawingInProgress) return;
-  const latlng = e.latlng, d = drawingInProgress;
-  if (d.type === 'pencil') { d.points.push([latlng.lat, latlng.lng]); d.previewLayer.addLatLng(latlng); }
+}
+function updateDrawingPreview(latlng) {
+  const d = drawingInProgress;
+  if (!d) return;
+  if (d.type === 'pencil') { d.points.push([latlng.lat, latlng.lng]); d.previewLayer.setLatLngs(smoothPencilPoints(d.points)); }
   else if (d.type === 'line' || d.type === 'arrow') { d.points[1] = [latlng.lat, latlng.lng]; d.previewLayer.setLatLngs(d.points); }
   else if (d.type === 'circle') { d.radius = L.latLng(d.center).distanceTo(latlng); d.previewLayer.setRadius(d.radius); }
   else if (d.type === 'rectangle') { d.bounds = [d.corner1, [latlng.lat, latlng.lng]]; d.previewLayer.setBounds(d.bounds); }
-});
-map.on('mouseup', () => {
-  if (toolMode !== 'draw' || !drawingInProgress) return;
+}
+function finishDrawing() {
+  if (!drawingInProgress) return;
   const d = drawingInProgress;
   drawingInProgress = null;
   drawLayerGroup.removeLayer(d.previewLayer);
@@ -2452,21 +2504,89 @@ map.on('mouseup', () => {
   if (d.type === 'pencil' && d.points.length < 2) return;
   if (d.type === 'pencil') d.points = smoothPencilPoints(d.points);
   localDrawings.push(d);
+  drawRedoStack = []; // a fresh stroke invalidates whatever redo history existed
   renderDrawing(d);
-  saveDrawingsToStorage();
-});
+}
 
-document.getElementById('btnDrawUndo').addEventListener('click', () => {
+function cancelCurrentDrawing() {
+  if (!drawingInProgress) return;
+  drawLayerGroup.removeLayer(drawingInProgress.previewLayer);
+  drawingInProgress = null;
+}
+
+function drawUndo() {
+  if (!localDrawings.length) return;
   const last = localDrawings.pop();
-  if (last && last._layer) drawLayerGroup.removeLayer(last._layer);
-  saveDrawingsToStorage();
-});
+  if (last._layer) drawLayerGroup.removeLayer(last._layer);
+  drawRedoStack.push(last);
+}
+function drawRedo() {
+  if (!drawRedoStack.length) return;
+  const d = drawRedoStack.pop();
+  localDrawings.push(d);
+  renderDrawing(d);
+}
+
+// Every native mousemove/touchmove can fire far faster than the browser can
+// actually paint a frame — collapsing to at most one preview update per
+// animation frame (always using the freshest pointer position) is what keeps
+// the preview from lagging a visible step behind the real pointer.
+let pendingDrawLatLng = null;
+let drawRafPending = false;
+function scheduleDrawPreview(latlng) {
+  pendingDrawLatLng = latlng;
+  if (drawRafPending) return;
+  drawRafPending = true;
+  requestAnimationFrame(() => {
+    drawRafPending = false;
+    if (toolMode === 'draw' && drawingInProgress && pendingDrawLatLng) updateDrawingPreview(pendingDrawLatLng);
+  });
+}
+function flushPendingDrawPreview() {
+  if (drawRafPending && pendingDrawLatLng) updateDrawingPreview(pendingDrawLatLng);
+  drawRafPending = false;
+  pendingDrawLatLng = null;
+}
+
+map.on('mousedown', (e) => { if (toolMode === 'draw') startDrawing(e.latlng); });
+map.on('mousemove', (e) => { if (toolMode === 'draw' && drawingInProgress) scheduleDrawPreview(e.latlng); });
+map.on('mouseup', () => { if (toolMode === 'draw') { flushPendingDrawPreview(); finishDrawing(); } });
+
+// Leaflet's map-level 'mousedown'/'mousemove'/'mouseup' events are derived from
+// real mouse input only — mobile browsers don't synthesize those for drag
+// gestures, only for simple taps, so touch needs its own listeners bound
+// directly to the map container to draw by dragging a finger.
+function latLngFromTouch(touch) {
+  const rect = map.getContainer().getBoundingClientRect();
+  return map.containerPointToLatLng(L.point(touch.clientX - rect.left, touch.clientY - rect.top));
+}
+const mapContainerEl = map.getContainer();
+mapContainerEl.addEventListener('touchstart', (ev) => {
+  if (toolMode !== 'draw' || !ev.touches.length) return;
+  ev.preventDefault();
+  startDrawing(latLngFromTouch(ev.touches[0]));
+}, { passive: false });
+mapContainerEl.addEventListener('touchmove', (ev) => {
+  if (toolMode !== 'draw' || !drawingInProgress || !ev.touches.length) return;
+  ev.preventDefault();
+  scheduleDrawPreview(latLngFromTouch(ev.touches[0]));
+}, { passive: false });
+mapContainerEl.addEventListener('touchend', (ev) => {
+  if (toolMode !== 'draw') return;
+  ev.preventDefault();
+  flushPendingDrawPreview();
+  finishDrawing();
+}, { passive: false });
+
+document.getElementById('btnDrawUndo').addEventListener('click', drawUndo);
+document.getElementById('btnDrawRedo').addEventListener('click', drawRedo);
 document.getElementById('btnDrawClear').addEventListener('click', () => {
   if (!localDrawings.length) return;
-  if (!confirm('Clear all local drawings? This only affects your own browser, not the published map.')) return;
-  localDrawings = [];
-  drawLayerGroup.clearLayers();
-  saveDrawingsToStorage();
+  showConfirmModal('Clear all local drawings? This only affects your own browser, not the published map.', () => {
+    localDrawings = [];
+    drawRedoStack = [];
+    drawLayerGroup.clearLayers();
+  }, 'Clear');
 });
 document.getElementById('btnDrawSave').addEventListener('click', () => {
   const geo = {
