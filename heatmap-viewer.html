@@ -215,6 +215,27 @@
   .search-result:last-child{border-bottom:none;}
   .search-result:hover,.search-result.active{background:var(--panel2);}
   .search-result .sr-main{color:var(--text);}
+
+  /* ---- Day-by-day navigator (top-center), like deepstatemap.live's date bar —
+     hidden entirely until data/index.json actually lists at least one archived
+     day, so a site that hasn't started publishing daily snapshots yet doesn't
+     show a broken/empty control. */
+  #dateNav{
+    position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:1200;display:none;
+    align-items:center;gap:2px;background:var(--panel);border:1px solid var(--border);
+    border-radius:20px;box-shadow:0 4px 14px #0007;padding:4px;
+  }
+  #dateNav button{border-radius:16px;}
+  #btnDatePrev,#btnDateNext{width:28px;height:28px;padding:0;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  #btnDatePrev:disabled,#btnDateNext:disabled{opacity:.3;cursor:default;}
+  #dateNavLabel{padding:0 10px;font-size:12px;font-weight:600;white-space:nowrap;}
+  .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;font-size:11px;}
+  .cal-day{padding:6px 0;text-align:center;border-radius:5px;cursor:pointer;color:var(--text);}
+  .cal-day:hover{background:var(--panel3);}
+  .cal-day.cal-header{font-weight:600;color:var(--sub);cursor:default;background:none;}
+  .cal-day.cal-disabled{opacity:.25;cursor:default;pointer-events:none;}
+  .cal-day.cal-selected{background:var(--accent);color:#fff;font-weight:700;}
+  :root[data-device="mobile"] #dateNav{ top:64px; }
   .search-result .sr-sub{color:var(--sub);font-size:10.5px;margin-top:1px;}
 
   /* ---- Floating draw toolbar (local scratchpad — never published) ----
@@ -416,7 +437,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v1.7</span>
+      <span class="version-tag">v1.8</span>
     </div>
   </div>
 </div>
@@ -428,6 +449,26 @@
     <button id="searchClearBtn" title="Clear"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/></svg></button>
   </div>
   <div id="searchResults"></div>
+</div>
+
+<div id="dateNav" title="Browse previous days — ← / → also work">
+  <button id="btnDatePrev" title="Previous day (←)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg></button>
+  <button id="dateNavLabel" title="Pick a date">…</button>
+  <button id="btnDateNext" title="Next day (→)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></button>
+</div>
+
+<div class="modal-overlay" id="dateCalendar">
+  <div class="modal" style="width:260px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+      <button id="calPrevMonth" class="small" style="padding:4px 8px;">‹</button>
+      <span id="calMonthLabel" style="font-weight:600;font-size:13px;"></span>
+      <button id="calNextMonth" class="small" style="padding:4px 8px;">›</button>
+    </div>
+    <div id="calGrid" class="cal-grid"></div>
+    <div class="modal-actions" style="justify-content:flex-end;">
+      <button id="btnCloseDateCalendar" class="primary">Close</button>
+    </div>
+  </div>
 </div>
 
 <div id="drawToolbar">
@@ -2138,6 +2179,128 @@ function fetchAndLoad() {
     });
 }
 
+/* ---------------- Day-by-day navigation (like deepstatemap.live) ----------------
+   The root heatmap-data.json (fetched above) always holds the LATEST day — that
+   never changes here. Past days are archived as their own dated copies at
+   data/<YYYY-MM-DD>/heatmap-data.json, with data/index.json listing which dates
+   actually exist (a static host can't list a directory, so this stands in for
+   that). currentDateIndex is -1 while viewing the latest/root data (the normal
+   state — nothing extra is fetched for it, reusing what fetchAndLoad already
+   loaded), or an index into availableDates while browsing a specific past day.
+   Switching days re-runs loadHeatmapData exactly like the initial load does —
+   it already fully tears down and rebuilds every layer, so there's no separate
+   "day view" code path to keep in sync with the normal one. */
+let availableDates = []; // ascending 'YYYY-MM-DD', populated from data/index.json
+let currentDateIndex = -1; // -1 = latest (root heatmap-data.json)
+let calendarMonth = null;
+
+const dateNav = document.getElementById('dateNav');
+const dateNavLabel = document.getElementById('dateNavLabel');
+const btnDatePrev = document.getElementById('btnDatePrev');
+const btnDateNext = document.getElementById('btnDateNext');
+const dateCalendar = document.getElementById('dateCalendar');
+const calGrid = document.getElementById('calGrid');
+const calMonthLabel = document.getElementById('calMonthLabel');
+
+function parseISODate(dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+function formatDateLabel(dateStr) {
+  return parseISODate(dateStr).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+function activeDateStr() {
+  return currentDateIndex === -1 ? availableDates[availableDates.length - 1] : availableDates[currentDateIndex];
+}
+
+function updateDateNavUI() {
+  if (!availableDates.length) { dateNav.style.display = 'none'; return; }
+  dateNav.style.display = 'flex';
+  dateNavLabel.textContent = formatDateLabel(activeDateStr()) + (currentDateIndex === -1 ? ' (latest)' : '');
+  btnDatePrev.disabled = (currentDateIndex === -1 ? availableDates.length : currentDateIndex) <= 0;
+  btnDateNext.disabled = currentDateIndex === -1;
+}
+
+function loadDateIndex() {
+  fetch('data/index.json?_=' + Date.now())
+    .then(r => { if (!r.ok) throw new Error('no index'); return r.json(); })
+    .then(list => { availableDates = Array.isArray(list) ? list.slice().sort() : []; })
+    .catch(() => { availableDates = []; }) // no daily archive published yet — nav just stays hidden
+    .then(updateDateNavUI);
+}
+
+function switchToDateIndex(idx) {
+  currentDateIndex = idx;
+  updateDateNavUI();
+  const isLatest = idx === -1;
+  const url = isLatest ? 'heatmap-data.json' : `data/${availableDates[idx]}/heatmap-data.json`;
+  fetch(url + '?_=' + Date.now())
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(loadHeatmapData)
+    .catch(err => alert("Couldn't load that day's data: " + err.message));
+}
+
+btnDatePrev.addEventListener('click', () => {
+  if (btnDatePrev.disabled) return;
+  const cur = currentDateIndex === -1 ? availableDates.length - 1 : currentDateIndex;
+  switchToDateIndex(cur - 1);
+});
+btnDateNext.addEventListener('click', () => {
+  if (btnDateNext.disabled) return;
+  const next = currentDateIndex + 1;
+  switchToDateIndex(next >= availableDates.length - 1 ? -1 : next);
+});
+document.addEventListener('keydown', (e) => {
+  const tag = (document.activeElement && document.activeElement.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || !availableDates.length) return;
+  if (e.key === 'ArrowLeft') { e.preventDefault(); btnDatePrev.click(); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); btnDateNext.click(); }
+});
+
+function renderCalendar() {
+  const y = calendarMonth.getFullYear(), m = calendarMonth.getMonth();
+  calMonthLabel.textContent = calendarMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  calGrid.innerHTML = '';
+  ['S', 'M', 'T', 'W', 'T', 'F', 'S'].forEach(d => {
+    const el = document.createElement('div');
+    el.className = 'cal-day cal-header';
+    el.textContent = d;
+    calGrid.appendChild(el);
+  });
+  const firstDow = new Date(y, m, 1).getDay();
+  const daysInMonth = new Date(y, m + 1, 0).getDate();
+  for (let i = 0; i < firstDow; i++) calGrid.appendChild(document.createElement('div'));
+  const active = activeDateStr();
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateStr = `${y}-${String(m + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const el = document.createElement('div');
+    el.className = 'cal-day';
+    el.textContent = day;
+    const idx = availableDates.indexOf(dateStr);
+    if (idx === -1) {
+      el.classList.add('cal-disabled');
+    } else {
+      if (dateStr === active) el.classList.add('cal-selected');
+      el.addEventListener('click', () => {
+        switchToDateIndex(idx === availableDates.length - 1 ? -1 : idx);
+        dateCalendar.classList.remove('open');
+      });
+    }
+    calGrid.appendChild(el);
+  }
+}
+document.getElementById('calPrevMonth').addEventListener('click', () => { calendarMonth.setMonth(calendarMonth.getMonth() - 1); renderCalendar(); });
+document.getElementById('calNextMonth').addEventListener('click', () => { calendarMonth.setMonth(calendarMonth.getMonth() + 1); renderCalendar(); });
+dateNavLabel.addEventListener('click', () => {
+  if (!availableDates.length) return;
+  calendarMonth = parseISODate(activeDateStr());
+  calendarMonth.setDate(1);
+  renderCalendar();
+  dateCalendar.classList.add('open');
+});
+document.getElementById('btnCloseDateCalendar').addEventListener('click', () => dateCalendar.classList.remove('open'));
+dateCalendar.addEventListener('click', (e) => { if (e.target === dateCalendar) dateCalendar.classList.remove('open'); });
+
 /* ---------------- Fortification overlays (ditches/teeth/wire) ----------------
    Lazy-loaded on first toggle — ditches.geojson alone is ~20k features / 11MB, so
    fetching all three eagerly on page load would make every visit slow before
@@ -3101,6 +3264,7 @@ function waitForMapReady(callback, attemptsLeft) {
 }
 
 waitForMapReady(fetchAndLoad);
+loadDateIndex();
 </script>
 </body>
 </html>
