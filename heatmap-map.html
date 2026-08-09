@@ -128,6 +128,13 @@
   #map3d.active{display:block;}
   #map3d canvas{cursor:grab;}
   #map3d.orbiting canvas{cursor:grabbing;}
+  /* Leaflet's control container is reparented into #mapWrap by script (see
+     the 3D view section) so the legend, theme toggle, and 3D/2D button stay
+     above #map3d instead of being buried under it — its own leaflet.css
+     z-index (1000) only matters relative to the OTHER children it used to
+     share a stacking context with inside #map; here it needs to beat
+     #map3d's z-index:1 directly. */
+  #mapWrap > .leaflet-control-container{z-index:2;}
   .basemap-toggle-btn.active-toggle{background:var(--accent);color:#fff;}
   /* Leaflet's own scale control sits 5px closer to the edge than the
      .legend-control boxes stacked above it in the same bottom-left corner —
@@ -605,7 +612,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v2.4</span>
+      <span class="version-tag">v2.5</span>
     </div>
   </div>
 </div>
@@ -1060,11 +1067,19 @@ map.addControl(new ThemeControl());
    map.dragging).
    #map3d is a SIBLING of #map (see #mapWrap in the stylesheet), never a
    descendant, so Leaflet's own controls (the legend, etc.) can never be
-   dragged along with it — that was the source of the earlier bug where the
-   sidebar's switches and the legend appeared to float above the tilted map. */
+   dragged/warped along with it the way they were under the old CSS-tilt
+   version — that was the source of the earlier bug where the sidebar's
+   switches and the legend appeared to float above the tilted map.
+   Leaflet's own control container is reparented out of #map and into
+   #mapWrap directly (see below), stacked above #map3d — otherwise every
+   Leaflet control (the legend, the theme toggle, and this very 3D/2D
+   button) would be buried under the WebGL view the moment 3D turns on,
+   which for the 3D toggle button specifically would mean no way to click
+   back out of 3D at all. */
 let is3DActive = false;
 let map3DGL = null, map3DReady = false, pendingShow3D = false;
 const map3DContainerEl = document.getElementById('map3d');
+document.getElementById('mapWrap').appendChild(map._controlContainer);
 
 function ensure3DMap() {
   if (map3DGL) return;
