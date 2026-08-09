@@ -523,13 +523,11 @@
             <option value="VIIRS_NOAA21_NRT">VIIRS NOAA-21</option>
             <option value="MODIS_NRT">MODIS</option>
           </select>
-          <select id="firmsDays" style="flex:0 0 70px;">
+          <select id="firmsDays" style="flex:0 0 70px;" title="FIRMS' own API rejects area queries wider than 5 days with a response that's missing CORS headers, which browsers can only report as a generic blocked/failed request — so the picker stops at 5 to avoid ever hitting that.">
             <option value="1">1 day</option>
             <option value="2" selected>2 days</option>
             <option value="3">3 days</option>
             <option value="5">5 days</option>
-            <option value="7">7 days</option>
-            <option value="10">10 days</option>
           </select>
         </div>
         <div class="overlay-status" id="firmsStatus" style="display:none;"></div>
@@ -563,7 +561,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v1.7</span>
+      <span class="version-tag">v1.8</span>
     </div>
   </div>
 </div>
@@ -1512,7 +1510,14 @@ async function toggleFirmsOverlay(enabled) {
   });
 
   if (failures === sources.length) {
-    status(firstError instanceof TypeError ? 'FIRMS blocked by CORS — needs a proxy' : `FIRMS error: ${firstError?.message ?? 'unknown'}`);
+    // A bare TypeError here (no readable status/body) almost always means FIRMS
+    // itself rejected the request in a way that also drops CORS headers off the
+    // error response — confirmed by direct testing: 1-5 day queries succeed
+    // consistently, 6+ day queries fail consistently and fast (~200ms, too fast
+    // to be a timeout), for the exact same key/source/bbox. Not an actual
+    // cross-origin restriction, and not something a proxy is needed for — the
+    // day picker above is capped at 5 specifically to stay under this.
+    status(firstError instanceof TypeError ? "FIRMS didn't respond — try fewer days" : `FIRMS error: ${firstError?.message ?? 'unknown'}`);
     document.getElementById('chkFirms').checked = false;
     // See the missing-key branch above for why firmsOpts stays open — the
     // error message and key field both need to stay visible so the user can
