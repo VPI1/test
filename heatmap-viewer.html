@@ -66,7 +66,17 @@
      accounts for a mobile browser's dynamic toolbar; plain vh overshoots the
      actually-visible area on most mobile browsers. */
   #app{display:flex;height:100vh;height:100dvh;width:100vw;overflow:hidden;}
-  #map{flex:1;height:100%;background:var(--bg);}
+  /* -webkit-touch-callout/user-select: none stop a mobile long-press over the
+     map from triggering the browser's native text-selection/callout menu —
+     needed because the map now has its own long-press gesture (pick
+     coordinates, see the touch handlers in the script) that would otherwise
+     fight with it. Scoped to #map only so normal text selection elsewhere
+     (modals, credit links, etc.) is untouched. */
+  #map{flex:1;height:100%;background:var(--bg);-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;}
+  .leaflet-control-scale-line{
+    background:var(--panel)!important;color:var(--text)!important;border:1px solid var(--border)!important;
+    border-top:none!important;box-shadow:0 2px 8px #0006;border-radius:0 0 4px 4px;
+  }
   #sidebar{
     width:300px;min-width:300px;background:var(--panel);border-left:1px solid var(--border);
     display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden;
@@ -288,6 +298,14 @@
   }
   .modal h2{font-size:14px;margin:0 0 10px;}
   .modal-actions{display:flex;justify-content:space-between;margin-top:12px;gap:6px;}
+  .shortcuts-list{display:flex;flex-direction:column;gap:10px;}
+  .shortcut-row{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12.5px;color:var(--text);}
+  .shortcut-row .sc-desc{flex:1;}
+  .kbd{
+    display:inline-flex;align-items:center;justify-content:center;min-width:20px;padding:2px 6px;
+    font-family:ui-monospace,Consolas,monospace;font-size:11px;font-weight:600;
+    background:var(--panel3);border:1px solid var(--border);border-bottom-width:2px;border-radius:5px;color:var(--text);
+  }
   .info-modal-body{font-size:12.5px;line-height:1.55;color:var(--text);}
   .info-modal-body h3{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--sub);margin:0 0 8px;}
   .info-modal-body p{margin:0 0 10px;}
@@ -314,6 +332,7 @@
     <div class="toolbar">
       <button id="btnRuler" style="flex:1;" title="Click to place points along a path — shows running distance, and area once you close the shape"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="8" rx="1.5"/><line x1="7" y1="8" x2="7" y2="11"/><line x1="11" y1="8" x2="11" y2="11"/><line x1="15" y1="8" x2="15" y2="11"/><line x1="19" y1="8" x2="19" y2="11"/></svg> Ruler</button>
       <button id="btnDraw" style="flex:1;" title="Freehand sketch/annotate on the map — local to your browser only, never published or shared"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg> Draw</button>
+      <button id="btnCoordPick" style="flex:1;" title="Tap anywhere on the map to look up its coordinates — easier on mobile than right-click. Long-pressing the map does the same thing even without this on."><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/></svg> Coords</button>
     </div>
     <div class="overlay-section">
       <h3>Overlays</h3>
@@ -396,7 +415,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v1.5</span>
+      <span class="version-tag">v1.6</span>
     </div>
   </div>
 </div>
@@ -477,6 +496,23 @@
     </div>
     <div class="modal-actions" style="justify-content:flex-end;">
       <button id="btnCloseInfo" class="primary">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="shortcutsModal">
+  <div class="modal" style="width:340px;max-width:90vw;">
+    <h2>Keyboard shortcuts</h2>
+    <div class="shortcuts-list">
+      <div class="shortcut-row"><span class="sc-desc">Undo last local drawing</span><span><span class="kbd">Ctrl</span>+<span class="kbd">Z</span></span></div>
+      <div class="shortcut-row"><span class="sc-desc">Redo</span><span><span class="kbd">Ctrl</span>+<span class="kbd">Shift</span>+<span class="kbd">Z</span></span></div>
+      <div class="shortcut-row"><span class="sc-desc">Cancel the stroke currently being drawn</span><span class="kbd">Esc</span></div>
+      <div class="shortcut-row"><span class="sc-desc">Jump to first search result</span><span class="kbd">Enter</span></div>
+      <div class="shortcut-row"><span class="sc-desc">Clear search results</span><span class="kbd">Esc</span></div>
+    </div>
+    <p style="font-size:11px;color:var(--sub);margin:12px 0 0;">Undo/redo applies to your local drawings while the Draw tool is open.</p>
+    <div class="modal-actions" style="justify-content:flex-end;">
+      <button id="btnCloseShortcuts" class="primary">Close</button>
     </div>
   </div>
 </div>
@@ -713,6 +749,13 @@ const BasemapControl = L.Control.extend({
     L.DomEvent.disableClickPropagation(container);
     L.DomEvent.disableScrollPropagation(container);
     this._menu = menu;
+    // disableClickPropagation above only stops clicks INSIDE the container
+    // from bubbling further — a click anywhere else on the page still reaches
+    // document normally, which is exactly what's needed to close the menu
+    // when the user taps/clicks away from it instead of the toggle button.
+    document.addEventListener('click', (e) => {
+      if (menu.style.display !== 'none' && !container.contains(e.target)) menu.style.display = 'none';
+    });
     return container;
   }
 });
@@ -879,6 +922,23 @@ const InfoControl = L.Control.extend({
 map.addControl(new InfoControl());
 document.getElementById('btnCloseInfo').addEventListener('click', () => infoModal.classList.remove('open'));
 infoModal.addEventListener('click', (e) => { if (e.target === infoModal) infoModal.classList.remove('open'); });
+
+const shortcutsModal = document.getElementById('shortcutsModal');
+const ShortcutsControl = L.Control.extend({
+  options: { position: 'topright' },
+  onAdd: function() {
+    const btn = L.DomUtil.create('div', 'basemap-toggle-btn');
+    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="6" y1="9" x2="6.01" y2="9"/><line x1="10" y1="9" x2="10.01" y2="9"/><line x1="14" y1="9" x2="14.01" y2="9"/><line x1="18" y1="9" x2="18.01" y2="9"/><line x1="6" y1="13" x2="6.01" y2="13"/><line x1="18" y1="13" x2="18.01" y2="13"/><line x1="9" y1="13" x2="15" y2="13"/></svg>';
+    btn.title = 'Keyboard shortcuts';
+    L.DomEvent.on(btn, 'click', L.DomEvent.stop);
+    L.DomEvent.on(btn, 'click', () => shortcutsModal.classList.add('open'));
+    L.DomEvent.disableClickPropagation(btn);
+    return btn;
+  }
+});
+map.addControl(new ShortcutsControl());
+document.getElementById('btnCloseShortcuts').addEventListener('click', () => shortcutsModal.classList.remove('open'));
+shortcutsModal.addEventListener('click', (e) => { if (e.target === shortcutsModal) shortcutsModal.classList.remove('open'); });
 
 /* ---------------- Themed confirm modal ----------------
    A styled stand-in for window.confirm() (reuses the same .modal-overlay/.open
@@ -2231,11 +2291,13 @@ function shareLinkFor(lat, lng, zoom) {
   return url.toString();
 }
 
-map.on('contextmenu', (e) => {
-  L.DomEvent.preventDefault(e.originalEvent);
-  const { lat, lng } = e.latlng;
+// Shared by right-click (desktop), the Coords tool's plain tap (see
+// btnCoordPick above), and the mobile long-press gesture below — all three
+// are just different ways of saying "the user picked this point."
+function openCoordPopupAt(latlng) {
+  const { lat, lng } = latlng;
   const popup = L.popup({ className: 'polygon-edit-popup' })
-    .setLatLng(e.latlng)
+    .setLatLng(latlng)
     .setContent(buildCoordPopupHtml(lat, lng))
     .openOn(map);
   setTimeout(() => {
@@ -2249,7 +2311,54 @@ map.on('contextmenu', (e) => {
       setTimeout(() => { shareBtn.innerHTML = LINK_ICON_SVG + ' Share link'; }, 1500);
     });
   }, 0);
+}
+
+map.on('contextmenu', (e) => {
+  L.DomEvent.preventDefault(e.originalEvent);
+  openCoordPopupAt(e.latlng);
 });
+map.on('click', (e) => { if (toolMode === 'coord') openCoordPopupAt(e.latlng); });
+
+// A mobile long-press stand-in for right-click: hold a finger still on the
+// map for COORD_LONG_PRESS_MS without moving more than the tolerance, and it
+// opens the same coordinate popup. Only armed in plain pan mode ('none') —
+// Ruler/Draw/Coords already have their own touch handling, and this would
+// just fight with it. Deliberately never calls preventDefault (that would
+// also block Leaflet's own touch panning/pinch-zoom) — the native
+// long-press text-selection/callout it would otherwise trigger is suppressed
+// instead via the -webkit-touch-callout/user-select CSS on #map.
+const COORD_LONG_PRESS_MS = 550;
+const COORD_LONG_PRESS_TOLERANCE_PX = 10;
+let coordLongPressTimer = null;
+let coordLongPressStart = null;
+function clearCoordLongPress() {
+  if (coordLongPressTimer) clearTimeout(coordLongPressTimer);
+  coordLongPressTimer = null;
+  coordLongPressStart = null;
+}
+// Uses map.getContainer() directly rather than the mapContainerEl alias
+// declared in the Draw tool section further down this file — this block
+// runs before that declaration executes.
+map.getContainer().addEventListener('touchstart', (ev) => {
+  if (toolMode !== 'none' || !ev.touches.length) return;
+  const t = ev.touches[0];
+  coordLongPressStart = [t.clientX, t.clientY];
+  coordLongPressTimer = setTimeout(() => {
+    coordLongPressTimer = null;
+    const rect = map.getContainer().getBoundingClientRect();
+    openCoordPopupAt(map.containerPointToLatLng(L.point(t.clientX - rect.left, t.clientY - rect.top)));
+  }, COORD_LONG_PRESS_MS);
+}, { passive: true });
+map.getContainer().addEventListener('touchmove', (ev) => {
+  if (!coordLongPressTimer || !ev.touches.length) return;
+  const t = ev.touches[0];
+  const dx = t.clientX - coordLongPressStart[0], dy = t.clientY - coordLongPressStart[1];
+  if (Math.hypot(dx, dy) > COORD_LONG_PRESS_TOLERANCE_PX) clearCoordLongPress();
+}, { passive: true });
+map.getContainer().addEventListener('touchend', clearCoordLongPress);
+map.getContainer().addEventListener('touchcancel', clearCoordLongPress);
+
+L.control.scale({ position: 'bottomleft', metric: true, imperial: true }).addTo(map);
 
 function applySharedLocationFromURL() {
   const params = new URLSearchParams(location.search);
@@ -2266,9 +2375,10 @@ applySharedLocationFromURL();
    The viewer has no heat-editing mode system to coordinate with (that's an
    editor-only concept) — toolMode here just directly controls map dragging and
    double-click-zoom while a tool is active. */
-let toolMode = 'none'; // 'none' | 'ruler' | 'draw'
+let toolMode = 'none'; // 'none' | 'ruler' | 'draw' | 'coord'
 const btnRuler = document.getElementById('btnRuler');
 const btnDraw = document.getElementById('btnDraw');
+const btnCoordPick = document.getElementById('btnCoordPick');
 const drawToolbar = document.getElementById('drawToolbar');
 const rulerPanel = document.getElementById('rulerPanel');
 
@@ -2277,17 +2387,21 @@ function setToolMode(newMode) {
   toolMode = newMode;
   btnRuler.classList.toggle('active-toggle', toolMode === 'ruler');
   btnDraw.classList.toggle('active-toggle', toolMode === 'draw');
+  btnCoordPick.classList.toggle('active-toggle', toolMode === 'coord');
   drawToolbar.style.display = toolMode === 'draw' ? 'flex' : 'none';
   rulerPanel.style.display = (toolMode === 'ruler' || rulerPoints.length) ? 'flex' : 'none';
-  map.getContainer().classList.toggle('drawing-cursor', toolMode === 'draw');
-  if (toolMode !== 'none') {
+  map.getContainer().classList.toggle('drawing-cursor', toolMode === 'draw' || toolMode === 'coord');
+  // Ruler and Draw both need the view to hold still for the whole interaction
+  // (Draw's live preview — see the canvas-based system below — tracks the
+  // pointer in screen-pixel space, which only stays valid if the view can't
+  // shift mid-stroke; Ruler's points are placed relative to each other on a
+  // fixed view). Coord-picking is a single tap with no such dependency, so it
+  // deliberately leaves panning and zooming free — you want to be able to
+  // move around and pick from different spots without leaving the tool.
+  const locksView = toolMode === 'ruler' || toolMode === 'draw';
+  if (locksView) {
     map.dragging.disable();
     map.doubleClickZoom.disable();
-    // The draw tool's live preview (see the canvas-based system below) tracks
-    // the pointer in screen-pixel space for the whole stroke, which only
-    // stays valid if the view can't shift mid-draw — locking zoom too (not
-    // just pan) means every screen pixel keeps meaning the same map location
-    // for as long as a tool is active, ruler included.
     map.scrollWheelZoom.disable();
     map.touchZoom.disable();
     map.boxZoom.disable();
@@ -2302,6 +2416,7 @@ function setToolMode(newMode) {
 }
 btnRuler.addEventListener('click', () => setToolMode(toolMode === 'ruler' ? 'none' : 'ruler'));
 btnDraw.addEventListener('click', () => setToolMode(toolMode === 'draw' ? 'none' : 'draw'));
+btnCoordPick.addEventListener('click', () => setToolMode(toolMode === 'coord' ? 'none' : 'coord'));
 
 // Ctrl+Z/Ctrl+Shift+Z (and the Ctrl+Y alias) target the draw tool's own
 // undo/redo stack (see drawUndo/drawRedo below) — the viewer has no other
