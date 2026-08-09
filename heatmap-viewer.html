@@ -207,12 +207,21 @@
   .search-result .sr-main{color:var(--text);}
   .search-result .sr-sub{color:var(--sub);font-size:10.5px;margin-top:1px;}
 
-  /* ---- Floating draw toolbar (local scratchpad — never published) ---- */
+  /* ---- Floating draw toolbar (local scratchpad — never published) ----
+     Left-aligned under #searchBox (same left:14px) instead of centered, so it
+     reads as attached to the search/tools cluster rather than floating
+     independently at top-center. */
   #drawToolbar{
-    position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:1200;display:none;
+    position:fixed;top:60px;left:14px;z-index:1200;display:none;
     background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 4px 14px #0007;
-    padding:8px;gap:8px;flex-direction:column;
+    padding:8px;gap:8px;flex-direction:column;max-width:min(340px,calc(100vw - 28px));
   }
+  /* Live in-progress stroke preview — a plain canvas overlaying the map,
+     drawn in screen-pixel space so it never has to round-trip through
+     Leaflet's lat/lng reprojection or rebuild an SVG path every frame (see
+     the draw-tool script section for why). Only visible mid-stroke; the
+     finished shape is handed off to a real Leaflet layer on release. */
+  #drawPreviewCanvas{position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:650;display:none;}
   .draw-tool-row{display:flex;gap:5px;}
   .draw-tool-btn{width:32px;height:32px;padding:0;display:flex;align-items:center;justify-content:center;font-size:15px;}
   .draw-tool-btn.active-toggle{background:var(--warn);border-color:var(--warn);}
@@ -387,7 +396,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v1.4</span>
+      <span class="version-tag">v1.5</span>
     </div>
   </div>
 </div>
@@ -2274,10 +2283,21 @@ function setToolMode(newMode) {
   if (toolMode !== 'none') {
     map.dragging.disable();
     map.doubleClickZoom.disable();
+    // The draw tool's live preview (see the canvas-based system below) tracks
+    // the pointer in screen-pixel space for the whole stroke, which only
+    // stays valid if the view can't shift mid-draw — locking zoom too (not
+    // just pan) means every screen pixel keeps meaning the same map location
+    // for as long as a tool is active, ruler included.
+    map.scrollWheelZoom.disable();
+    map.touchZoom.disable();
+    map.boxZoom.disable();
   } else {
     map.dragging.enable();
     map.doubleClickZoom.enable();
-    drawingInProgress = null;
+    map.scrollWheelZoom.enable();
+    map.touchZoom.enable();
+    map.boxZoom.enable();
+    if (drawingInProgress) cancelCurrentDrawing();
   }
 }
 btnRuler.addEventListener('click', () => setToolMode(toolMode === 'ruler' ? 'none' : 'ruler'));
@@ -2406,10 +2426,10 @@ drawColorInput.addEventListener('input', () => {
   });
 });
 
-// Recomputed on every rAF-coalesced preview tick (see updateDrawingPreview) so
-// the smoothing is visible live while dragging, not just once the stroke is
-// finalized — d.points itself stays raw until mouseup so the final smoothing
-// pass has the full-resolution source to work from.
+// Applied once, to the finished stroke (see finishDrawing) — the LIVE preview
+// while dragging uses its own much cheaper incremental smoothing on a canvas
+// (see drawPencilSegment) instead of re-running this over the whole growing
+// point list every frame.
 function smoothPencilPoints(points, segmentsPerSpan) {
   if (points.length < 3) return points;
   segmentsPerSpan = segmentsPerSpan || 8;
@@ -2432,6 +2452,14 @@ function smoothPencilPoints(points, segmentsPerSpan) {
   return result;
 }
 
+// The shaft is drawn a little short of the true endpoint (pulled back along
+// the line's own direction) so its round end-cap lands underneath the solid
+// arrowhead triangle instead of poking out past its narrow tip.
+function arrowShaftEndPoint(fromPt, toPt, size) {
+  const angle = Math.atan2(toPt.y - fromPt.y, toPt.x - fromPt.x);
+  const pullBack = (8 + size * 2) * 0.6;
+  return L.point(toPt.x - pullBack * Math.cos(angle), toPt.y - pullBack * Math.sin(angle));
+}
 function buildArrowHead(from, to, color, size) {
   const fromPt = map.latLngToLayerPoint(from), toPt = map.latLngToLayerPoint(to);
   const angle = Math.atan2(toPt.y - fromPt.y, toPt.x - fromPt.x);
@@ -2446,7 +2474,9 @@ function renderDrawing(d) {
   if (d.type === 'pencil' || d.type === 'line') {
     layer = L.polyline(d.points, { color: d.color, weight: d.size });
   } else if (d.type === 'arrow') {
-    layer = L.layerGroup([L.polyline(d.points, { color: d.color, weight: d.size }), buildArrowHead(d.points[0], d.points[1], d.color, d.size)]);
+    const fromPt = map.latLngToLayerPoint(d.points[0]), toPt = map.latLngToLayerPoint(d.points[1]);
+    const shaftEnd = map.layerPointToLatLng(arrowShaftEndPoint(fromPt, toPt, d.size));
+    layer = L.layerGroup([L.polyline([d.points[0], shaftEnd], { color: d.color, weight: d.size }), buildArrowHead(d.points[0], d.points[1], d.color, d.size)]);
   } else if (d.type === 'circle') {
     layer = L.circle(d.center, { radius: d.radius, color: d.color, weight: d.size, fillOpacity: 0.08 });
   } else if (d.type === 'rectangle') {
@@ -2463,55 +2493,168 @@ document.querySelectorAll('.draw-tool-btn').forEach(btn => {
   });
 });
 
+/* ---- Live stroke preview: plain <canvas>, screen-pixel space ----
+   Points are plotted directly in on-screen pixels (no per-point Leaflet
+   reprojection), the finished part of a pencil stroke is painted once and
+   never touched again (an incremental quadratic-curve-through-midpoints
+   technique — see drawPencilSegment — draws only the newest segment each
+   call, so cost per event is constant instead of growing with stroke
+   length), and line/arrow/circle/rectangle previews are cheap enough to
+   redraw from scratch every frame since they're just one primitive, not an
+   accumulating path. Only the FINISHED shape gets handed to a real Leaflet
+   layer (see finishDrawing). This mirrors how map-annotation tools like
+   deepstatemap handle freehand drawing — screen-space canvas for the live
+   feedback, georeferenced vectors only for the committed result. Locking pan
+   AND zoom for the whole time a tool is active (see setToolMode) is what
+   keeps screen-pixel coordinates meaningful for the entire stroke. */
+const drawCanvas = document.createElement('canvas');
+drawCanvas.id = 'drawPreviewCanvas';
+map.getContainer().appendChild(drawCanvas);
+const drawCtx = drawCanvas.getContext('2d');
+let drawCanvasCssW = 0, drawCanvasCssH = 0;
+function resizeDrawCanvas() {
+  const rect = map.getContainer().getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  drawCanvasCssW = rect.width;
+  drawCanvasCssH = rect.height;
+  drawCanvas.width = Math.round(rect.width * dpr);
+  drawCanvas.height = Math.round(rect.height * dpr);
+  drawCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+function clearDrawCanvas() { drawCtx.clearRect(0, 0, drawCanvasCssW, drawCanvasCssH); }
+
+function drawArrowOnCanvas(ctx, from, to, color, size) {
+  const angle = Math.atan2(to[1] - from[1], to[0] - from[0]);
+  const headLen = 8 + size * 2, spread = 0.5;
+  const shaftEnd = [to[0] - headLen * 0.6 * Math.cos(angle), to[1] - headLen * 0.6 * Math.sin(angle)];
+  ctx.strokeStyle = color; ctx.lineWidth = size; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(from[0], from[1]); ctx.lineTo(shaftEnd[0], shaftEnd[1]); ctx.stroke();
+  const p1 = [to[0] - headLen * Math.cos(angle - spread), to[1] - headLen * Math.sin(angle - spread)];
+  const p2 = [to[0] - headLen * Math.cos(angle + spread), to[1] - headLen * Math.sin(angle + spread)];
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.moveTo(to[0], to[1]); ctx.lineTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]); ctx.closePath(); ctx.fill();
+}
+
+// Draws only the newest bit of curve since the previous point — a classic
+// "quadratic curve through midpoints" incremental smoother: each new segment
+// runs from the last midpoint to the new midpoint, bowing through the actual
+// raw point as its control point. Cost is O(1) per call regardless of how
+// long the stroke has gotten, and nothing already painted is ever redrawn or
+// moved, which is what keeps the settled part of the stroke from wobbling.
+function drawPencilSegment(d, pt) {
+  const mid = [(d.prevPt[0] + pt[0]) / 2, (d.prevPt[1] + pt[1]) / 2];
+  drawCtx.strokeStyle = d.color;
+  drawCtx.lineWidth = d.size;
+  drawCtx.lineCap = 'round';
+  drawCtx.lineJoin = 'round';
+  drawCtx.beginPath();
+  drawCtx.moveTo(d.prevMid[0], d.prevMid[1]);
+  drawCtx.quadraticCurveTo(d.prevPt[0], d.prevPt[1], mid[0], mid[1]);
+  drawCtx.stroke();
+  d.prevMid = mid;
+  d.prevPt = pt;
+}
+
+// Unlike pencil (appends cheaply, O(1) per new point), a shape's whole
+// geometry changes every tick, so the only option is clearing and redrawing
+// it from scratch. Still trivial: it's one primitive, not an accumulating path.
+function redrawLiveShape(d) {
+  clearDrawCanvas();
+  drawCtx.strokeStyle = d.color;
+  drawCtx.fillStyle = d.color;
+  drawCtx.lineWidth = d.size;
+  drawCtx.lineCap = 'round';
+  if (d.type === 'line') {
+    drawCtx.beginPath();
+    drawCtx.moveTo(d.start[0], d.start[1]);
+    drawCtx.lineTo(d.current[0], d.current[1]);
+    drawCtx.stroke();
+  } else if (d.type === 'arrow') {
+    drawArrowOnCanvas(drawCtx, d.start, d.current, d.color, d.size);
+  } else if (d.type === 'circle') {
+    const r = Math.hypot(d.current[0] - d.start[0], d.current[1] - d.start[1]);
+    drawCtx.globalAlpha = 0.08;
+    drawCtx.beginPath(); drawCtx.arc(d.start[0], d.start[1], r, 0, Math.PI * 2); drawCtx.fill();
+    drawCtx.globalAlpha = 1;
+    drawCtx.beginPath(); drawCtx.arc(d.start[0], d.start[1], r, 0, Math.PI * 2); drawCtx.stroke();
+  } else if (d.type === 'rectangle') {
+    const x = Math.min(d.start[0], d.current[0]), y = Math.min(d.start[1], d.current[1]);
+    const w = Math.abs(d.current[0] - d.start[0]), h = Math.abs(d.current[1] - d.start[1]);
+    drawCtx.globalAlpha = 0.08; drawCtx.fillRect(x, y, w, h); drawCtx.globalAlpha = 1;
+    drawCtx.strokeRect(x, y, w, h);
+  }
+}
+
 // mousedown/mousemove/mouseup and touchstart/touchmove/touchend both funnel
 // into these three functions so mouse and touch input behave identically —
 // Leaflet's own map events only normalize touch into synthetic mouse events
 // for simple taps, not drags, so a real touch listener (below) is needed for
-// drawing to work by dragging a finger on mobile.
-function startDrawing(latlng) {
+// drawing to work by dragging a finger on mobile. All three work in
+// screen-pixel coordinates (Leaflet's containerPoint) rather than lat/lng.
+function startDrawing(cp) {
+  resizeDrawCanvas();
+  clearDrawCanvas();
+  drawCanvas.style.display = 'block';
   const color = drawColorInput.value, size = +drawSizeInput.value;
+  const pt = [cp.x, cp.y];
   if (drawTool === 'pencil') {
-    drawingInProgress = { type: 'pencil', points: [[latlng.lat, latlng.lng]], color, size };
-    drawingInProgress.previewLayer = L.polyline([latlng], { color, weight: size }).addTo(drawLayerGroup);
-  } else if (drawTool === 'line' || drawTool === 'arrow') {
-    drawingInProgress = { type: drawTool, points: [[latlng.lat, latlng.lng], [latlng.lat, latlng.lng]], color, size };
-    drawingInProgress.previewLayer = L.polyline(drawingInProgress.points, { color, weight: size }).addTo(drawLayerGroup);
-  } else if (drawTool === 'circle') {
-    drawingInProgress = { type: 'circle', center: [latlng.lat, latlng.lng], radius: 1, color, size };
-    drawingInProgress.previewLayer = L.circle(latlng, { radius: 1, color, weight: size, fillOpacity: 0.08 }).addTo(drawLayerGroup);
-  } else if (drawTool === 'rectangle') {
-    drawingInProgress = { type: 'rectangle', corner1: [latlng.lat, latlng.lng], bounds: [[latlng.lat, latlng.lng], [latlng.lat, latlng.lng]], color, size };
-    drawingInProgress.previewLayer = L.rectangle(drawingInProgress.bounds, { color, weight: size, fillOpacity: 0.08 }).addTo(drawLayerGroup);
+    drawingInProgress = { type: 'pencil', screenPoints: [pt], color, size, prevPt: pt, prevMid: pt };
+  } else {
+    drawingInProgress = { type: drawTool, start: pt, current: pt, color, size };
   }
 }
-function updateDrawingPreview(latlng) {
+function updateDrawingPreview(cp) {
   const d = drawingInProgress;
   if (!d) return;
-  if (d.type === 'pencil') { d.points.push([latlng.lat, latlng.lng]); d.previewLayer.setLatLngs(smoothPencilPoints(d.points)); }
-  else if (d.type === 'line' || d.type === 'arrow') { d.points[1] = [latlng.lat, latlng.lng]; d.previewLayer.setLatLngs(d.points); }
-  else if (d.type === 'circle') { d.radius = L.latLng(d.center).distanceTo(latlng); d.previewLayer.setRadius(d.radius); }
-  else if (d.type === 'rectangle') { d.bounds = [d.corner1, [latlng.lat, latlng.lng]]; d.previewLayer.setBounds(d.bounds); }
+  const pt = [cp.x, cp.y];
+  if (d.type === 'pencil') {
+    d.screenPoints.push(pt);
+    drawPencilSegment(d, pt);
+  } else {
+    d.current = pt;
+    redrawLiveShape(d);
+  }
 }
 function finishDrawing() {
-  if (!drawingInProgress) return;
   const d = drawingInProgress;
+  if (!d) return;
   drawingInProgress = null;
-  drawLayerGroup.removeLayer(d.previewLayer);
-  delete d.previewLayer;
-  if (d.type === 'circle' && d.radius < 2) return;
-  if (d.type === 'rectangle' && L.latLngBounds(d.bounds).getNorthEast().distanceTo(L.latLngBounds(d.bounds).getSouthWest()) < 4) return;
-  if ((d.type === 'line' || d.type === 'arrow') && L.latLng(d.points[0]).distanceTo(d.points[1]) < 2) return;
-  if (d.type === 'pencil' && d.points.length < 2) return;
-  if (d.type === 'pencil') d.points = smoothPencilPoints(d.points);
-  localDrawings.push(d);
+  clearDrawCanvas();
+  drawCanvas.style.display = 'none';
+
+  let record = null;
+  if (d.type === 'pencil') {
+    if (d.screenPoints.length < 2) return;
+    const latlngs = d.screenPoints.map(p => map.containerPointToLatLng(L.point(p[0], p[1])));
+    record = { type: 'pencil', color: d.color, size: d.size, points: smoothPencilPoints(latlngs.map(ll => [ll.lat, ll.lng])) };
+  } else if (d.type === 'line' || d.type === 'arrow') {
+    if (Math.hypot(d.current[0] - d.start[0], d.current[1] - d.start[1]) < 2) return;
+    const from = map.containerPointToLatLng(L.point(d.start[0], d.start[1]));
+    const to = map.containerPointToLatLng(L.point(d.current[0], d.current[1]));
+    record = { type: d.type, color: d.color, size: d.size, points: [[from.lat, from.lng], [to.lat, to.lng]] };
+  } else if (d.type === 'circle') {
+    const rPx = Math.hypot(d.current[0] - d.start[0], d.current[1] - d.start[1]);
+    if (rPx < 2) return;
+    const center = map.containerPointToLatLng(L.point(d.start[0], d.start[1]));
+    const edge = map.containerPointToLatLng(L.point(d.current[0], d.current[1]));
+    record = { type: 'circle', color: d.color, size: d.size, center: [center.lat, center.lng], radius: center.distanceTo(edge) };
+  } else if (d.type === 'rectangle') {
+    if (Math.hypot(d.current[0] - d.start[0], d.current[1] - d.start[1]) < 4) return;
+    const c1 = map.containerPointToLatLng(L.point(d.start[0], d.start[1]));
+    const c2 = map.containerPointToLatLng(L.point(d.current[0], d.current[1]));
+    record = { type: 'rectangle', color: d.color, size: d.size, bounds: [[c1.lat, c1.lng], [c2.lat, c2.lng]] };
+  }
+  if (!record) return;
+  localDrawings.push(record);
   drawRedoStack = []; // a fresh stroke invalidates whatever redo history existed
-  renderDrawing(d);
+  renderDrawing(record);
 }
 
 function cancelCurrentDrawing() {
   if (!drawingInProgress) return;
-  drawLayerGroup.removeLayer(drawingInProgress.previewLayer);
   drawingInProgress = null;
+  clearDrawCanvas();
+  drawCanvas.style.display = 'none';
 }
 
 function drawUndo() {
@@ -2527,54 +2670,60 @@ function drawRedo() {
   renderDrawing(d);
 }
 
-// Every native mousemove/touchmove can fire far faster than the browser can
-// actually paint a frame — collapsing to at most one preview update per
-// animation frame (always using the freshest pointer position) is what keeps
-// the preview from lagging a visible step behind the real pointer.
-let pendingDrawLatLng = null;
-let drawRafPending = false;
-function scheduleDrawPreview(latlng) {
-  pendingDrawLatLng = latlng;
-  if (drawRafPending) return;
-  drawRafPending = true;
+// Pencil draws directly on every event — each call is O(1) (see
+// drawPencilSegment), cheap enough that waiting for an animation frame would
+// only add latency for no benefit. Shape previews (line/arrow/circle/
+// rectangle) redraw the ENTIRE canvas from scratch every call (see
+// redrawLiveShape), so those still get coalesced to one update per frame to
+// avoid clearing/repainting more times than a frame can actually show.
+let pendingShapeCp = null;
+let shapeRafPending = false;
+function scheduleShapePreview(cp) {
+  pendingShapeCp = cp;
+  if (shapeRafPending) return;
+  shapeRafPending = true;
   requestAnimationFrame(() => {
-    drawRafPending = false;
-    if (toolMode === 'draw' && drawingInProgress && pendingDrawLatLng) updateDrawingPreview(pendingDrawLatLng);
+    shapeRafPending = false;
+    if (toolMode === 'draw' && drawingInProgress && drawingInProgress.type !== 'pencil' && pendingShapeCp) updateDrawingPreview(pendingShapeCp);
   });
 }
-function flushPendingDrawPreview() {
-  if (drawRafPending && pendingDrawLatLng) updateDrawingPreview(pendingDrawLatLng);
-  drawRafPending = false;
-  pendingDrawLatLng = null;
+function flushPendingShapePreview() {
+  if (shapeRafPending && pendingShapeCp) updateDrawingPreview(pendingShapeCp);
+  shapeRafPending = false;
+  pendingShapeCp = null;
+}
+function handleDrawMove(cp) {
+  if (drawingInProgress.type === 'pencil') updateDrawingPreview(cp);
+  else scheduleShapePreview(cp);
 }
 
-map.on('mousedown', (e) => { if (toolMode === 'draw') startDrawing(e.latlng); });
-map.on('mousemove', (e) => { if (toolMode === 'draw' && drawingInProgress) scheduleDrawPreview(e.latlng); });
-map.on('mouseup', () => { if (toolMode === 'draw') { flushPendingDrawPreview(); finishDrawing(); } });
+map.on('mousedown', (e) => { if (toolMode === 'draw') startDrawing(e.containerPoint); });
+map.on('mousemove', (e) => { if (toolMode === 'draw' && drawingInProgress) handleDrawMove(e.containerPoint); });
+map.on('mouseup', () => { if (toolMode === 'draw') { flushPendingShapePreview(); finishDrawing(); } });
 
 // Leaflet's map-level 'mousedown'/'mousemove'/'mouseup' events are derived from
 // real mouse input only — mobile browsers don't synthesize those for drag
 // gestures, only for simple taps, so touch needs its own listeners bound
 // directly to the map container to draw by dragging a finger.
-function latLngFromTouch(touch) {
+function containerPointFromTouch(touch) {
   const rect = map.getContainer().getBoundingClientRect();
-  return map.containerPointToLatLng(L.point(touch.clientX - rect.left, touch.clientY - rect.top));
+  return L.point(touch.clientX - rect.left, touch.clientY - rect.top);
 }
 const mapContainerEl = map.getContainer();
 mapContainerEl.addEventListener('touchstart', (ev) => {
   if (toolMode !== 'draw' || !ev.touches.length) return;
   ev.preventDefault();
-  startDrawing(latLngFromTouch(ev.touches[0]));
+  startDrawing(containerPointFromTouch(ev.touches[0]));
 }, { passive: false });
 mapContainerEl.addEventListener('touchmove', (ev) => {
   if (toolMode !== 'draw' || !drawingInProgress || !ev.touches.length) return;
   ev.preventDefault();
-  scheduleDrawPreview(latLngFromTouch(ev.touches[0]));
+  handleDrawMove(containerPointFromTouch(ev.touches[0]));
 }, { passive: false });
 mapContainerEl.addEventListener('touchend', (ev) => {
   if (toolMode !== 'draw') return;
   ev.preventDefault();
-  flushPendingDrawPreview();
+  flushPendingShapePreview();
   finishDrawing();
 }, { passive: false });
 
