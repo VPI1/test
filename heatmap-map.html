@@ -671,7 +671,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v4.3</span>
+      <span class="version-tag">v4.4</span>
     </div>
   </div>
 </div>
@@ -1254,15 +1254,18 @@ function ensure3DMap() {
     container: 'map3d',
     style: { version: 8, sources: {}, layers: [] },
     center: [0, 0], zoom: 2, pitch: 60, bearing: 0,
-    // maxZoom caps how close the camera can get to the ground. Now that the
-    // terrain source despikes corrupted DEM pixels (see the
-    // ukwarmap-terrain:// protocol below) and each basemap's own imagery
-    // maxzoom is capped per-provider (BASEMAP_3D_MAXZOOM), the earlier, much
-    // lower ceiling this held (15) is no longer needed to avoid blank tiles
-    // or CORS errors — raised to let normal 3D browsing get meaningfully
-    // closer to the terrain. Past this, MapLibre just overzooms the last
-    // real tile/mesh it has, same as any raster/DEM source.
-    maxPitch: 85, maxZoom: 20, antialias: true, attributionControl: false
+    // maxZoom caps how close the camera can get to the ground — without a
+    // low-enough cap here, MapLibre's own camera-vs-terrain collision
+    // handling shoves the camera up abruptly ("teleporting") once the
+    // camera would otherwise clip below the surface, which real terrain's
+    // local bumps make easy to trigger at a steep pitch even well short of
+    // 20. Tried raising this once already (to 20) on the theory that the
+    // despiked terrain + per-basemap imagery caps had removed the original
+    // reason for a low ceiling — confirmed by direct testing that it had
+    // NOT: the teleport is a distance-to-terrain problem, not a tile-
+    // availability one, and un-related to either of those fixes. Back to
+    // the value actually confirmed stable.
+    maxPitch: 85, maxZoom: 15, antialias: true, attributionControl: false
   });
   // Rotation/tilt is handled entirely by this file's own middle-mouse
   // handler below (to match the button convention already established), so
@@ -1448,7 +1451,7 @@ const CompassControl = L.Control.extend({
     const btn = L.DomUtil.create('div', 'basemap-toggle-btn');
     btn.style.display = 'none';
     btn.title = 'Reset to north';
-    btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.5"/><g class="compass-needle" style="transform-origin:12px 12px;"><polygon points="12,4.5 15,12 12,19.5 9,12" fill="var(--accent2)" stroke="none"/></g></svg>';
+    btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9.5"/><g class="compass-needle" style="transform-origin:12px 12px;"><polygon points="12,4.5 15,12 9,12" fill="var(--accent2)" stroke="none"/><polygon points="12,19.5 15,12 9,12" fill="var(--text)" stroke="none"/></g></svg>';
     L.DomEvent.on(btn, 'click', L.DomEvent.stop);
     L.DomEvent.on(btn, 'click', () => { if (map3DGL) map3DGL.jumpTo({ bearing: 0 }); });
     L.DomEvent.disableClickPropagation(btn);
@@ -1476,11 +1479,15 @@ function updateCompassNeedle() {
 // gets as visually close to that as the ordinary zoom/pitch controls allow
 // rather than promising an exact placement it can't deliver. maxZoom is
 // nudged up temporarily for this (and restored on exit) — past the normal
-// cap this app otherwise holds for ordinary 3D browsing.
+// 15 cap this app otherwise holds to avoid the ground-teleport/blank-tile
+// issues a casual close-in zoom used to cause, but this is one deliberate,
+// discrete jump straight to the target rather than the gradual creeping-in
+// that actually triggered those. 19 is the highest confirmed stable by
+// direct testing — 21 (tried once) brought the teleport back even here.
 let groundViewActive = false;
 let groundViewPrevState = null;
 let placingGroundView = false;
-const GROUND_VIEW_ZOOM = 19, GROUND_VIEW_MAX_ZOOM = 21;
+const GROUND_VIEW_ZOOM = 18, GROUND_VIEW_MAX_ZOOM = 19;
 const GroundViewControl = L.Control.extend({
   options: { position: 'topright' },
   onAdd: function() {
@@ -1543,7 +1550,7 @@ function exitGroundView() {
   if (!groundViewActive) return;
   groundViewActive = false;
   if (groundViewPrevState) map3DGL.jumpTo(groundViewPrevState);
-  map3DGL.setMaxZoom(20);
+  map3DGL.setMaxZoom(15);
   groundViewControl._btn.classList.remove('active-toggle');
   groundViewControl._btn.title = 'Stand at ground level here (click to place yourself)';
 }
@@ -7176,7 +7183,7 @@ function buildElevationChartSvg(samples, widthPx, heightPx) {
     const diff = valid[i].elevM - valid[i - 1].elevM;
     if (diff > 0) gain += diff; else loss -= diff;
   }
-  return `<svg viewBox="0 0 ${widthPx} ${heightPx}" width="100%" height="${heightPx}" style="display:block;cursor:crosshair;">
+  return `<svg viewBox="0 0 ${widthPx} ${heightPx}" width="100%" height="${heightPx}" preserveAspectRatio="none" style="display:block;cursor:crosshair;">
     <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT + h}" stroke="var(--border)" stroke-width="1"/>
     <line x1="${padL}" y1="${padT + h}" x2="${padL + w}" y2="${padT + h}" stroke="var(--border)" stroke-width="1"/>
     <path d="${areaD}" fill="var(--accent)" fill-opacity="0.15" stroke="none"/>
@@ -7186,7 +7193,7 @@ function buildElevationChartSvg(samples, widthPx, heightPx) {
     <text x="${padL}" y="${heightPx - 3}" font-size="9" fill="var(--sub)">0</text>
     <text x="${padL + w}" y="${heightPx - 3}" font-size="9" fill="var(--sub)" text-anchor="end">${formatDistance(totalDist)}</text>
     <line class="chart-hover-line" x1="0" y1="${padT}" x2="0" y2="${padT + h}" stroke="var(--text)" stroke-width="1" stroke-dasharray="3 2" opacity="0" pointer-events="none"/>
-    <circle class="chart-hover-dot" r="3.5" fill="var(--accent)" stroke="var(--bg)" stroke-width="1.5" opacity="0" pointer-events="none"/>
+    <circle class="chart-hover-dot" r="5" fill="var(--warn)" stroke="var(--bg)" stroke-width="2" opacity="0" pointer-events="none"/>
   </svg>
   <div class="elev-chart-hover-stat" style="font-size:10.5px;color:var(--text);min-height:14px;">&nbsp;</div>
   <div style="font-size:10.5px;color:var(--sub);">Gain <b style="color:var(--good);">+${Math.round(gain)}m</b> · Loss <b style="color:var(--accent2);">-${Math.round(loss)}m</b></div>`;
