@@ -671,7 +671,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v4.5</span>
+      <span class="version-tag">v4.6</span>
     </div>
   </div>
 </div>
@@ -1618,42 +1618,69 @@ function toggle3DView(on) {
   }
 }
 
-// Left-drag pan and scroll-to-zoom are MapLibre's own native handlers — a
-// genuine interactive map instance needs no reimplementing of either.
-// Middle-drag orbits (bearing) + adjusts tilt (pitch) instead, matching the
-// button this editor already exposes for it. Dragging down tips the camera
-// further toward the horizon (steeper), not away from it. Bearing sign is
-// set so dragging right turns the view clockwise and dragging left turns it
+// Left-drag pan and scroll-to-zoom are MapLibre's own native handlers in
+// ordinary 3D browsing — no need to reimplement either. Middle-drag orbits
+// (bearing) + adjusts tilt (pitch) instead, matching the button this editor
+// already exposes for it. Dragging down tips the camera further toward the
+// horizon (steeper), not away from it. Bearing sign is set so dragging
+// right turns the view clockwise and dragging left turns it
 // counterclockwise, per direct feedback confirming that direction (the
 // earlier build had it backwards).
+//
+// While standing at ground level, native drag-pan is switched off entirely
+// (see enterGroundView) — a planted character doesn't relocate by dragging
+// the horizon — so plain left-drag is repurposed as the SAME look-around
+// gesture as middle-drag, matching how Google Earth Pro's ground view
+// works: click-drag anywhere to spin your view a full 360° around
+// yourself, no modifier key required. Middle-drag still works too, for
+// muscle-memory consistency with normal 3D browsing.
 let orbit3DState = null;
-map3DContainerEl.addEventListener('mousedown', (e) => {
-  if (!is3DActive || !map3DGL) return;
-  if (e.button === 1) {
-    orbit3DState = { x: e.clientX, y: e.clientY, bearing: map3DGL.getBearing(), pitch: map3DGL.getPitch() };
-    map3DContainerEl.classList.add('orbiting');
-    e.preventDefault();
-  }
-});
-document.addEventListener('mousemove', (e) => {
+function startOrbit(x, y) {
+  orbit3DState = { x, y, bearing: map3DGL.getBearing(), pitch: map3DGL.getPitch() };
+  map3DContainerEl.classList.add('orbiting');
+}
+function updateOrbit(x, y) {
   if (!orbit3DState || !map3DGL) return;
-  const dx = e.clientX - orbit3DState.x, dy = e.clientY - orbit3DState.y;
+  const dx = x - orbit3DState.x, dy = y - orbit3DState.y;
   const bearing = orbit3DState.bearing + dx * 0.3;
   // At a fixed zoom/center, pitch and camera altitude are linked — swinging
   // pitch down toward 0 pulls the camera way up into the air for the same
   // "distance to ground target," which is what read as a sudden teleport
   // while standing at ground level. Keeping pitch in a tight band close to
   // 85 there (instead of the full 0–85 normal-view range) keeps the camera
-  // at roughly eye height throughout the orbit.
+  // at roughly eye height throughout the look-around.
   const [minPitch, maxPitch] = groundViewActive ? [65, 85] : [0, 85];
   const pitch = Math.min(maxPitch, Math.max(minPitch, orbit3DState.pitch + dy * 0.3));
   map3DGL.jumpTo({ bearing, pitch });
-});
-document.addEventListener('mouseup', () => {
+}
+function endOrbit() {
   if (orbit3DState) { orbit3DState = null; map3DContainerEl.classList.remove('orbiting'); }
+}
+map3DContainerEl.addEventListener('mousedown', (e) => {
+  if (!is3DActive || !map3DGL) return;
+  if (e.button === 1 || (e.button === 0 && groundViewActive)) {
+    startOrbit(e.clientX, e.clientY);
+    e.preventDefault();
+  }
 });
+document.addEventListener('mousemove', (e) => updateOrbit(e.clientX, e.clientY));
+document.addEventListener('mouseup', endOrbit);
 map3DContainerEl.addEventListener('contextmenu', (e) => { if (is3DActive) e.preventDefault(); });
 map3DContainerEl.addEventListener('auxclick', (e) => { if (is3DActive && e.button === 1) e.preventDefault(); });
+// Touch has no middle-button equivalent, so a single-finger drag while
+// grounded does the same look-around (native touch drag-pan is already
+// disabled then, same as the mouse case, so there's no gesture conflict).
+map3DContainerEl.addEventListener('touchstart', (e) => {
+  if (!is3DActive || !map3DGL || !groundViewActive || e.touches.length !== 1) return;
+  startOrbit(e.touches[0].clientX, e.touches[0].clientY);
+  e.preventDefault();
+}, { passive: false });
+document.addEventListener('touchmove', (e) => {
+  if (!orbit3DState || !e.touches[0]) return;
+  updateOrbit(e.touches[0].clientX, e.touches[0].clientY);
+  e.preventDefault();
+}, { passive: false });
+document.addEventListener('touchend', endOrbit);
 
 /* ---------------- Crosshair ----------------
    A plain viewport-centered marker (see #crosshair in the stylesheet) with
@@ -7185,7 +7212,7 @@ async function sampleElevationAlongPath(points, sampleCount) {
     samples.push({ distM: targetDist, latlng });
   }
   const elevs = await Promise.all(samples.map(s => fetchElevationAt(s.latlng)));
-  return samples.map((s, i) => ({ distM: s.distM, elevM: elevs[i] }));
+  return samples.map((s, i) => ({ distM: s.distM, elevM: elevs[i], latlng: s.latlng }));
 }
 // A plain SVG line chart — no charting library needed for something this
 // simple, and it stays theme-consistent (var(--accent)/var(--sub) etc.)
@@ -7234,16 +7261,40 @@ function buildElevationChartSvg(samples, widthPx, heightPx) {
   <div style="font-size:10.5px;color:var(--sub);">Gain <b style="color:var(--good);">+${Math.round(gain)}m</b> · Loss <b style="color:var(--accent2);">-${Math.round(loss)}m</b></div>`;
 }
 
+// Shown on the actual Leaflet map while hovering the elevation chart (see
+// wireElevationChartHover below) — kept as a module-level singleton rather
+// than scoped inside that function so a fresh chart (re-wired on every new
+// route point) reuses/replaces the SAME marker instead of orphaning the
+// previous one, which would otherwise never get cleaned up since its own
+// hide() closure dies with the old chart's DOM.
+let chartHoverMapMarker = null;
+function showChartHoverMapMarker(latlng) {
+  if (!latlng) return;
+  if (chartHoverMapMarker) {
+    chartHoverMapMarker.setLatLng(latlng);
+  } else {
+    chartHoverMapMarker = L.circleMarker(latlng, { radius: 7, color: '#fff', weight: 2, fillColor: '#e0a83f', fillOpacity: 1 }).addTo(map);
+  }
+  chartHoverMapMarker.bringToFront();
+}
+function hideChartHoverMapMarker() {
+  if (chartHoverMapMarker) { map.removeLayer(chartHoverMapMarker); chartHoverMapMarker = null; }
+}
+
 // Wires the hover interaction onto the SVG buildElevationChartSvg just
 // produced — separate from that function since it needs a live element
 // reference, which an HTML string can't carry. samples/widthPx/heightPx
 // must be the exact same values used to build it, so the pixel math lines
 // up. Points are evenly spaced by index (see sampleElevationAlongPath), so
 // snapping to the nearest one is a plain proportional index lookup, not a
-// distance search.
+// distance search. Each sample's own latlng (see sampleElevationAlongPath)
+// drives a matching marker on the real map, not just the dot within the
+// chart's own SVG — the whole point of a hover readout on a route profile
+// is correlating "this bump in elevation" with "this spot on the ground."
 function wireElevationChartHover(wrapEl, samples, widthPx, heightPx) {
   const svg = wrapEl.querySelector('svg');
   if (!svg) return;
+  hideChartHoverMapMarker(); // a stale marker from a previous chart shouldn't linger
   const valid = samples.filter(s => s.elevM !== null && s.elevM !== undefined);
   if (valid.length < 2) return;
   const elevs = valid.map(s => s.elevM);
@@ -7267,11 +7318,13 @@ function wireElevationChartHover(wrapEl, samples, widthPx, heightPx) {
     hoverLine.setAttribute('x1', x); hoverLine.setAttribute('x2', x); hoverLine.setAttribute('opacity', '0.6');
     hoverDot.setAttribute('cx', x); hoverDot.setAttribute('cy', y); hoverDot.setAttribute('opacity', '1');
     statEl.innerHTML = `${formatDistance(s.distM)} <b style="color:var(--accent);">${Math.round(s.elevM)}m</b>`;
+    showChartHoverMapMarker(s.latlng);
   }
   function hide() {
     hoverLine.setAttribute('opacity', '0');
     hoverDot.setAttribute('opacity', '0');
     statEl.innerHTML = '&nbsp;';
+    hideChartHoverMapMarker();
   }
   svg.addEventListener('mousemove', (e) => update(e.clientX));
   svg.addEventListener('mouseleave', hide);
@@ -7444,6 +7497,7 @@ function routeClear() {
   routeLayerGroup.clearLayers();
   routeStatsEl.textContent = 'Click points on the map to build a route (2+)';
   routeElevWrapEl.innerHTML = '';
+  hideChartHoverMapMarker();
 }
 map.on('click', (e) => { if (toolMode === 'route') routeAddPoint(e.latlng); });
 document.getElementById('btnRouteClear').addEventListener('click', routeClear);
@@ -7858,6 +7912,29 @@ function parseLatLngInput(q) {
   return { lat, lng };
 }
 
+// Degrees/minutes/seconds, e.g. 47°39'05.8"N 35°52'51.8"E — accepts either
+// order (lat/N-S and lng/E-W are told apart by hemisphere letter, not
+// position), curly or straight prime/double-prime marks for '/", and a
+// missing seconds-mark (some sources omit the trailing "). Exactly two
+// hemisphere-tagged tokens are required so a single MGRS-ish or GPS-ish
+// string doesn't get misread as one axis with the other missing.
+const DMS_TOKEN_RE = /(\d{1,3})[°:\s]+(\d{1,2})['’′:\s]+([\d.]+)\s*(?:["”″])?\s*([NSEWnsew])/g;
+function parseDMSInput(q) {
+  const matches = [...q.matchAll(DMS_TOKEN_RE)];
+  if (matches.length !== 2) return null;
+  let lat = null, lng = null;
+  for (const m of matches) {
+    const deg = parseFloat(m[1]), min = parseFloat(m[2]), sec = parseFloat(m[3]);
+    const hemi = m[4].toUpperCase();
+    let val = deg + min / 60 + sec / 3600;
+    if (hemi === 'S' || hemi === 'W') val = -val;
+    if (hemi === 'N' || hemi === 'S') lat = val; else lng = val;
+  }
+  if (lat === null || lng === null) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return { lat, lng };
+}
+
 // The clear (X) button replaces the marker's own popup close button — it lives in
 // the search bar instead, and clears the text alongside the marker/outline so
 // there's one obvious "reset" affordance rather than two separate ones.
@@ -7927,7 +8004,7 @@ function runSearch(query, autoGo) {
     else renderSearchResults([item]);
     return;
   }
-  const coordHit = parseLatLngInput(q);
+  const coordHit = parseLatLngInput(q) || parseDMSInput(q);
   if (coordHit) {
     const item = { main: `${coordHit.lat.toFixed(5)}, ${coordHit.lng.toFixed(5)}`, sub: 'Coordinates', lat: coordHit.lat, lng: coordHit.lng, zoom: 15 };
     if (autoGo) goToResult(item.lat, item.lng, item.main, item.zoom);
