@@ -535,7 +535,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v4.0</span>
+      <span class="version-tag">v4.1</span>
     </div>
   </div>
 </div>
@@ -1192,6 +1192,15 @@ const basemaps3D = {
   esriTopo: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}']
 };
 const ESRI_DARK_GRAY_REFERENCE_TILES_3D = ['https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}'];
+// Ground view's steep 85° pitch means nearby foreground ground fills a huge
+// share of the screen, which pushes MapLibre to request FAR higher-zoom
+// tiles for it than the camera's own zoom would suggest — without an
+// explicit maxzoom, that meant asking Google's tile servers for z21/z22
+// tiles they don't serve via CORS fetch, failing loudly in the console on
+// every one. Capping each source at what its provider actually supports
+// (MapLibre then upscales its own last real tile past this, same as any
+// raster source) stops that outright instead of just quieting the errors.
+const BASEMAP_3D_MAXZOOM = { google: 20, ghybrid: 20, osm: 19, esri: 19, esriDarkGray: 16, esriTopo: 19 };
 
 // Called on the initial 3D open (with whichever basemap 2D is currently
 // showing) and again any time setBasemap() runs while 3D is active — same
@@ -1201,10 +1210,10 @@ function apply3DBasemapLayer(key) {
   ['esriImageryLayer', 'esriImageryLayer2'].forEach(id => { if (map3DGL.getLayer(id)) map3DGL.removeLayer(id); });
   ['esriImagery', 'esriImagery2'].forEach(id => { if (map3DGL.getSource(id)) map3DGL.removeSource(id); });
   const beforeId = map3DGL.getLayer('leafletOverlayLayer') ? 'leafletOverlayLayer' : undefined;
-  map3DGL.addSource('esriImagery', { type: 'raster', tiles: basemaps3D[key], tileSize: 256 });
+  map3DGL.addSource('esriImagery', { type: 'raster', tiles: basemaps3D[key], tileSize: 256, maxzoom: BASEMAP_3D_MAXZOOM[key] || 19 });
   map3DGL.addLayer({ id: 'esriImageryLayer', type: 'raster', source: 'esriImagery' }, beforeId);
   if (key === 'esriDarkGray') {
-    map3DGL.addSource('esriImagery2', { type: 'raster', tiles: ESRI_DARK_GRAY_REFERENCE_TILES_3D, tileSize: 256 });
+    map3DGL.addSource('esriImagery2', { type: 'raster', tiles: ESRI_DARK_GRAY_REFERENCE_TILES_3D, tileSize: 256, maxzoom: BASEMAP_3D_MAXZOOM[key] || 19 });
     map3DGL.addLayer({ id: 'esriImageryLayer2', type: 'raster', source: 'esriImagery2' }, beforeId);
   }
 }
