@@ -537,7 +537,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v4.2</span>
+      <span class="version-tag">v4.3</span>
     </div>
   </div>
 </div>
@@ -3643,6 +3643,11 @@ async function sampleElevationAlongPath(points, sampleCount) {
 // A plain SVG line chart — no charting library needed for something this
 // simple, and it stays theme-consistent (var(--accent)/var(--sub) etc.)
 // for free instead of fighting a third-party library's own color system.
+// Includes a hover readout: a dot + guide line tracks the mouse (or a
+// touch drag) horizontally across the chart and snaps to the nearest
+// sample, showing that point's distance/elevation — wired up by
+// wireElevationChartHover, called right after this HTML is inserted (a
+// plain innerHTML string has no live event listeners of its own).
 function buildElevationChartSvg(samples, widthPx, heightPx) {
   const valid = samples.filter(s => s.elevM !== null && s.elevM !== undefined);
   if (valid.length < 2) return '<div style="font-size:11px;color:var(--sub);padding:8px 0;">Not enough elevation data along this path.</div>';
@@ -3666,7 +3671,7 @@ function buildElevationChartSvg(samples, widthPx, heightPx) {
     const diff = valid[i].elevM - valid[i - 1].elevM;
     if (diff > 0) gain += diff; else loss -= diff;
   }
-  return `<svg viewBox="0 0 ${widthPx} ${heightPx}" width="100%" height="${heightPx}" style="display:block;">
+  return `<svg viewBox="0 0 ${widthPx} ${heightPx}" width="100%" height="${heightPx}" style="display:block;cursor:crosshair;">
     <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT + h}" stroke="var(--border)" stroke-width="1"/>
     <line x1="${padL}" y1="${padT + h}" x2="${padL + w}" y2="${padT + h}" stroke="var(--border)" stroke-width="1"/>
     <path d="${areaD}" fill="var(--accent)" fill-opacity="0.15" stroke="none"/>
@@ -3675,8 +3680,57 @@ function buildElevationChartSvg(samples, widthPx, heightPx) {
     <text x="2" y="${padT + h}" font-size="9" fill="var(--sub)">${Math.round(minE)}m</text>
     <text x="${padL}" y="${heightPx - 3}" font-size="9" fill="var(--sub)">0</text>
     <text x="${padL + w}" y="${heightPx - 3}" font-size="9" fill="var(--sub)" text-anchor="end">${formatDistance(totalDist)}</text>
+    <line class="chart-hover-line" x1="0" y1="${padT}" x2="0" y2="${padT + h}" stroke="var(--text)" stroke-width="1" stroke-dasharray="3 2" opacity="0" pointer-events="none"/>
+    <circle class="chart-hover-dot" r="3.5" fill="var(--accent)" stroke="var(--bg)" stroke-width="1.5" opacity="0" pointer-events="none"/>
   </svg>
-  <div style="font-size:10.5px;color:var(--sub);margin-top:2px;">Gain <b style="color:var(--good);">+${Math.round(gain)}m</b> · Loss <b style="color:var(--accent2);">-${Math.round(loss)}m</b></div>`;
+  <div class="elev-chart-hover-stat" style="font-size:10.5px;color:var(--text);min-height:14px;">&nbsp;</div>
+  <div style="font-size:10.5px;color:var(--sub);">Gain <b style="color:var(--good);">+${Math.round(gain)}m</b> · Loss <b style="color:var(--accent2);">-${Math.round(loss)}m</b></div>`;
+}
+
+// Wires the hover interaction onto the SVG buildElevationChartSvg just
+// produced — separate from that function since it needs a live element
+// reference, which an HTML string can't carry. samples/widthPx/heightPx
+// must be the exact same values used to build it, so the pixel math lines
+// up. Points are evenly spaced by index (see sampleElevationAlongPath), so
+// snapping to the nearest one is a plain proportional index lookup, not a
+// distance search.
+function wireElevationChartHover(wrapEl, samples, widthPx, heightPx) {
+  const svg = wrapEl.querySelector('svg');
+  if (!svg) return;
+  const valid = samples.filter(s => s.elevM !== null && s.elevM !== undefined);
+  if (valid.length < 2) return;
+  const elevs = valid.map(s => s.elevM);
+  const minE = Math.min(...elevs), maxE = Math.max(...elevs);
+  const range = Math.max(maxE - minE, 1);
+  const padL = 34, padR = 8, padT = 8, padB = 16;
+  const w = widthPx - padL - padR, h = heightPx - padT - padB;
+  const hoverLine = svg.querySelector('.chart-hover-line');
+  const hoverDot = svg.querySelector('.chart-hover-dot');
+  const statEl = wrapEl.querySelector('.elev-chart-hover-stat');
+  function update(clientX) {
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width) return;
+    const xPx = (clientX - rect.left) * (widthPx / rect.width);
+    const frac = Math.min(1, Math.max(0, (xPx - padL) / w));
+    const idx = Math.round(frac * (samples.length - 1));
+    const s = samples[idx];
+    if (!s || s.elevM === null || s.elevM === undefined) { hide(); return; }
+    const x = padL + frac * w;
+    const y = padT + h - ((s.elevM - minE) / range) * h;
+    hoverLine.setAttribute('x1', x); hoverLine.setAttribute('x2', x); hoverLine.setAttribute('opacity', '0.6');
+    hoverDot.setAttribute('cx', x); hoverDot.setAttribute('cy', y); hoverDot.setAttribute('opacity', '1');
+    statEl.innerHTML = `${formatDistance(s.distM)} <b style="color:var(--accent);">${Math.round(s.elevM)}m</b>`;
+  }
+  function hide() {
+    hoverLine.setAttribute('opacity', '0');
+    hoverDot.setAttribute('opacity', '0');
+    statEl.innerHTML = '&nbsp;';
+  }
+  svg.addEventListener('mousemove', (e) => update(e.clientX));
+  svg.addEventListener('mouseleave', hide);
+  svg.addEventListener('touchstart', (e) => { if (e.touches[0]) update(e.touches[0].clientX); }, { passive: true });
+  svg.addEventListener('touchmove', (e) => { if (e.touches[0]) update(e.touches[0].clientX); }, { passive: true });
+  svg.addEventListener('touchend', hide);
 }
 
 /* ---------------- Horizon / radio horizon tool ----------------
@@ -3802,6 +3856,7 @@ async function computeRoute() {
     const samples = await sampleElevationAlongPath(routePoints, 100);
     if (requestId !== routeRequestId) return;
     routeElevWrapEl.innerHTML = buildElevationChartSvg(samples, 380, 130);
+    wireElevationChartHover(routeElevWrapEl, samples, 380, 130);
     return;
   }
   routeStatsEl.textContent = 'Routing…';
@@ -3835,6 +3890,7 @@ async function computeRoute() {
   const samples = await sampleElevationAlongPath(shape, 100);
   if (requestId !== routeRequestId) return;
   routeElevWrapEl.innerHTML = buildElevationChartSvg(samples, 380, 130);
+  wireElevationChartHover(routeElevWrapEl, samples, 380, 130);
 }
 function routeClear() {
   routePoints = [];
