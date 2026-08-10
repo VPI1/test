@@ -99,6 +99,11 @@
   #map3d{position:absolute;inset:0;z-index:1;display:none;background:#0a0e14;}
   #map3d.active{display:block;}
   #map3d canvas{cursor:grab;}
+  /* Ground-view placement — a plain crosshair mouse cursor (matching the
+     Draw tool's .drawing-cursor convention below) rather than a fixed
+     viewport-centered reticle, since the click itself now places you
+     wherever it lands, not wherever the view happens to be centered. */
+  #map3d.placing-ground-view canvas{cursor:crosshair;}
   #map3d.orbiting canvas{cursor:grabbing;}
   /* Leaflet's control container is reparented into #mapWrap by script (see
      the 3D view section) so the legend, theme toggle, and 3D/2D button stay
@@ -339,10 +344,10 @@
   #rulerPanel .ruler-stat{color:var(--text);}
   #rulerPanel .ruler-stat b{color:var(--good);}
 
-  /* ---- Elevation chart / Horizon / Route panels — same floating,
+  /* ---- Route & Elevation / Horizon panels — same floating,
      top-center convention as #rulerPanel above, just wider since a chart
      needs real width to be legible. ---- */
-  #elevChartPanel, #routePanel{
+  #routePanel{
     position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:1200;display:none;
     background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 4px 14px #0007;
     padding:10px 12px;font-size:12.5px;flex-direction:column;gap:6px;
@@ -449,11 +454,8 @@
       <button id="btnCoordPick" style="flex:1;" title="Tap anywhere on the map to look up its coordinates — easier on mobile than right-click. Long-pressing the map does the same thing even without this on."><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/></svg> Coords</button>
     </div>
     <div class="toolbar">
-      <button id="btnElevChart" style="flex:1;" title="Click 2 or more points to chart the elevation profile between them, in a straight line"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l5-9 4 5 3-6 6 10"/></svg> Elevation</button>
       <button id="btnHorizon" style="flex:1;" title="Click a point to calculate how far you could see (or transmit a radio signal) from there, accounting for the Earth's curvature"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><line x1="4" y1="12" x2="20" y2="12" stroke-dasharray="2 2"/></svg> Horizon</button>
-    </div>
-    <div class="toolbar">
-      <button id="btnRoute" style="flex:1;" title="Plan a driving or walking route between two points — shows distance, time, and an elevation profile"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="5" r="2.5"/><path d="M8 18C14 18 10 8 16 7"/></svg> Route</button>
+      <button id="btnRoute" style="flex:1;" title="Plan a route through two or more points — shows distance, time, and an elevation profile. Car follows roads; Foot is a straight line between points."><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="5" r="2.5"/><path d="M8 18C14 18 10 8 16 7"/></svg> Route &amp; Elevation</button>
     </div>
     <div class="overlay-section">
       <h3>Overlays</h3>
@@ -535,7 +537,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v4.1</span>
+      <span class="version-tag">v4.2</span>
     </div>
   </div>
 </div>
@@ -608,14 +610,6 @@
   <button id="btnRulerClear" class="small"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg> Clear</button>
 </div>
 
-<div id="elevChartPanel">
-  <div class="panel-header-row">
-    <span class="panel-stat" id="elevChartStats">Click 2+ points on the map</span>
-    <button id="btnElevChartClear" class="small"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg> Clear</button>
-  </div>
-  <div class="elev-chart-svg-wrap" id="elevChartSvgWrap"></div>
-</div>
-
 <div id="horizonPanel">
   <span>Observer height <input id="horizonHeight" class="panel-height-input" type="number" value="1.8" min="0" step="0.1"> m</span>
   <span class="panel-stat" id="horizonResult">Click a point on the map</span>
@@ -630,7 +624,7 @@
     </div>
     <button id="btnRouteClear" class="small"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg> Clear</button>
   </div>
-  <div class="panel-stat" id="routeStats">Click a start point, then an end point</div>
+  <div class="panel-stat" id="routeStats">Click points on the map to build a route (2+)</div>
   <div class="elev-chart-svg-wrap" id="routeElevWrap"></div>
 </div>
 
@@ -1107,16 +1101,15 @@ function ensure3DMap() {
     container: 'map3d',
     style: { version: 8, sources: {}, layers: [] },
     center: [0, 0], zoom: 2, pitch: 60, bearing: 0,
-    // maxZoom caps how close the camera can get to the ground — without it,
-    // MapLibre's own camera-vs-terrain collision handling can shove the
-    // camera up abruptly ("teleporting") when it would otherwise clip below
-    // the surface, and getting that close also runs past the resolution of
-    // the imagery/terrain tiles, showing blank "map data not yet available"
-    // placeholders. Kept close to the terrain source's own maxzoom (15,
-    // below) rather than the imagery's — past that, MapLibre is extending
-    // the terrain mesh past the DEM data it actually has, which is where
-    // both problems get worse, not just closer to the ground.
-    maxPitch: 85, maxZoom: 15, antialias: true, attributionControl: false
+    // maxZoom caps how close the camera can get to the ground. Now that the
+    // terrain source despikes corrupted DEM pixels (see the
+    // ukwarmap-terrain:// protocol below) and each basemap's own imagery
+    // maxzoom is capped per-provider (BASEMAP_3D_MAXZOOM), the earlier, much
+    // lower ceiling this held (15) is no longer needed to avoid blank tiles
+    // or CORS errors — raised to let normal 3D browsing get meaningfully
+    // closer to the terrain. Past this, MapLibre just overzooms the last
+    // real tile/mesh it has, same as any raster/DEM source.
+    maxPitch: 85, maxZoom: 20, antialias: true, attributionControl: false
   });
   // Rotation/tilt is handled entirely by this file's own middle-mouse
   // handler below (to match the button convention already established), so
@@ -1125,6 +1118,11 @@ function ensure3DMap() {
   map3DGL.dragRotate.disable();
   map3DGL.touchZoomRotate.disableRotation();
   map3DGL.on('rotate', updateCompassNeedle);
+  // Ground-view placement's click-anywhere targeting (see
+  // startGroundViewPlacement) — e.lngLat is MapLibre's own terrain-aware
+  // unproject of the click, so this lands on the actual ground surface
+  // under the cursor, not a flat sea-level guess.
+  map3DGL.on('click', (e) => { if (placingGroundView) confirmGroundViewPlacement(e.lngLat); });
   // The draped overlay (heat/zone fills) is a flat image pinned to whatever
   // patch of ground Leaflet's 2D view was showing the moment 3D opened — it
   // does NOT grow or follow the camera on its own. Panning far enough (or
@@ -1325,21 +1323,17 @@ function updateCompassNeedle() {
 // gets as visually close to that as the ordinary zoom/pitch controls allow
 // rather than promising an exact placement it can't deliver. maxZoom is
 // nudged up temporarily for this (and restored on exit) — past the normal
-// 15 cap this app otherwise holds to avoid the ground-teleport/blank-tile
-// issues a casual close-in zoom used to cause, but this is one deliberate,
-// discrete jump straight to the target rather than the gradual creeping-in
-// that actually triggered those.
+// cap this app otherwise holds for ordinary 3D browsing.
 let groundViewActive = false;
 let groundViewPrevState = null;
 let placingGroundView = false;
-let crosshairForcedByGroundView = false;
-const GROUND_VIEW_ZOOM = 18, GROUND_VIEW_MAX_ZOOM = 19;
+const GROUND_VIEW_ZOOM = 19, GROUND_VIEW_MAX_ZOOM = 21;
 const GroundViewControl = L.Control.extend({
   options: { position: 'topright' },
   onAdd: function() {
     const btn = L.DomUtil.create('div', 'basemap-toggle-btn');
     btn.style.display = 'none';
-    btn.title = 'Close, low ground-level view here (as near to eye level as this map can show)';
+    btn.title = 'Stand at ground level here (click to place yourself)';
     btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2.5"/><path d="M12 8v7"/><path d="M8 22l4-7 4 7"/><path d="M8.5 12h7"/></svg>';
     L.DomEvent.on(btn, 'click', L.DomEvent.stop);
     L.DomEvent.on(btn, 'click', () => {
@@ -1355,41 +1349,38 @@ const GroundViewControl = L.Control.extend({
 const groundViewControl = new GroundViewControl();
 map.addControl(groundViewControl);
 
-// Clicking the button shows the crosshair (forcing it on if the user hadn't
-// already toggled it themselves) instead of placing you wherever the view
-// already happened to be centered — pan to line the crosshair up with the
-// spot you actually want, then click IT to confirm. Reuses the exact same
-// crosshair/hotspot the Crosshair toggle already provides (see below) —
-// its click handler checks placingGroundView first — rather than building
-// a second, separate targeting reticle.
+// Clicking the button arms placement mode: the mouse becomes a crosshair
+// (see #map3d.placing-ground-view in the stylesheet) and the NEXT click
+// anywhere on the 3D view drops you there directly — no panning to line up
+// a fixed reticle first. The actual click handler lives on map3DGL itself
+// (registered once in ensure3DMap, since map3DGL doesn't exist until the
+// first time 3D is opened) and reads e.lngLat, which MapLibre already
+// resolves against the terrain surface under the cursor.
 function startGroundViewPlacement() {
   if (!map3DGL) return;
   placingGroundView = true;
-  crosshairForcedByGroundView = !crosshairEl.classList.contains('active');
-  if (crosshairForcedByGroundView) crosshairEl.classList.add('active');
+  map3DContainerEl.classList.add('placing-ground-view');
   groundViewControl._btn.classList.add('active-toggle');
-  groundViewControl._btn.title = 'Pan to line the crosshair up with a spot, then click it to place yourself there (Esc to cancel)';
+  groundViewControl._btn.title = 'Click anywhere on the map to place yourself there (Esc to cancel)';
 }
 function cancelGroundViewPlacement() {
   placingGroundView = false;
-  if (crosshairForcedByGroundView) crosshairEl.classList.remove('active');
-  crosshairForcedByGroundView = false;
+  map3DContainerEl.classList.remove('placing-ground-view');
   groundViewControl._btn.classList.remove('active-toggle');
-  groundViewControl._btn.title = 'Close, low ground-level view here (as near to eye level as this map can show)';
+  groundViewControl._btn.title = 'Stand at ground level here (click to place yourself)';
 }
-function confirmGroundViewPlacement() {
+function confirmGroundViewPlacement(lngLat) {
   placingGroundView = false;
-  if (crosshairForcedByGroundView) crosshairEl.classList.remove('active');
-  crosshairForcedByGroundView = false;
-  enterGroundView();
+  map3DContainerEl.classList.remove('placing-ground-view');
+  enterGroundView(lngLat);
 }
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && placingGroundView) cancelGroundViewPlacement(); });
 
-function enterGroundView() {
+function enterGroundView(targetLngLat) {
   if (!map3DGL || groundViewActive) return;
   groundViewPrevState = { center: map3DGL.getCenter(), zoom: map3DGL.getZoom(), pitch: map3DGL.getPitch(), bearing: map3DGL.getBearing() };
   map3DGL.setMaxZoom(GROUND_VIEW_MAX_ZOOM);
-  map3DGL.jumpTo({ zoom: Math.max(map3DGL.getZoom(), GROUND_VIEW_ZOOM), pitch: 85 });
+  map3DGL.jumpTo({ center: targetLngLat || map3DGL.getCenter(), zoom: Math.max(map3DGL.getZoom(), GROUND_VIEW_ZOOM), pitch: 85 });
   groundViewActive = true;
   groundViewControl._btn.classList.add('active-toggle');
   groundViewControl._btn.title = 'Exit close-up ground view';
@@ -1399,9 +1390,9 @@ function exitGroundView() {
   if (!groundViewActive) return;
   groundViewActive = false;
   if (groundViewPrevState) map3DGL.jumpTo(groundViewPrevState);
-  map3DGL.setMaxZoom(15);
+  map3DGL.setMaxZoom(20);
   groundViewControl._btn.classList.remove('active-toggle');
-  groundViewControl._btn.title = 'Close, low ground-level view here (as near to eye level as this map can show)';
+  groundViewControl._btn.title = 'Stand at ground level here (click to place yourself)';
 }
 
 function toggle3DView(on) {
@@ -1441,10 +1432,7 @@ function toggle3DView(on) {
 // further toward the horizon (steeper), not away from it. Bearing sign is
 // set so dragging right turns the view clockwise and dragging left turns it
 // counterclockwise, per direct feedback confirming that direction (the
-// earlier build had it backwards). While standing at ground level the same
-// gesture instead repoints the FreeCamera's look direction — a much wider
-// pitch range (20–160, not 0–85) since a standing person can look well past
-// the horizon in either direction, up toward the sky or down at their feet.
+// earlier build had it backwards).
 let orbit3DState = null;
 map3DContainerEl.addEventListener('mousedown', (e) => {
   if (!is3DActive || !map3DGL) return;
@@ -1458,7 +1446,14 @@ document.addEventListener('mousemove', (e) => {
   if (!orbit3DState || !map3DGL) return;
   const dx = e.clientX - orbit3DState.x, dy = e.clientY - orbit3DState.y;
   const bearing = orbit3DState.bearing + dx * 0.3;
-  const pitch = Math.min(85, Math.max(0, orbit3DState.pitch + dy * 0.3));
+  // At a fixed zoom/center, pitch and camera altitude are linked — swinging
+  // pitch down toward 0 pulls the camera way up into the air for the same
+  // "distance to ground target," which is what read as a sudden teleport
+  // while standing at ground level. Keeping pitch in a tight band close to
+  // 85 there (instead of the full 0–85 normal-view range) keeps the camera
+  // at roughly eye height throughout the orbit.
+  const [minPitch, maxPitch] = groundViewActive ? [65, 85] : [0, 85];
+  const pitch = Math.min(maxPitch, Math.max(minPitch, orbit3DState.pitch + dy * 0.3));
   map3DGL.jumpTo({ bearing, pitch });
 });
 document.addEventListener('mouseup', () => {
@@ -1503,8 +1498,7 @@ try { setCrosshairVisible(localStorage.getItem(CROSSHAIR_STORAGE_KEY) === '1'); 
 crosshairHotspot.addEventListener('click', () => {
   crosshairHotspot.classList.add('tapped');
   setTimeout(() => crosshairHotspot.classList.remove('tapped'), 200);
-  if (placingGroundView) confirmGroundViewPlacement();
-  else openCoordPopupAt(map.getCenter());
+  openCoordPopupAt(map.getCenter());
 });
 
 /* ---------------- Mobile / desktop layout toggle ----------------
@@ -3371,16 +3365,14 @@ applySharedLocationFromURL();
    The viewer has no heat-editing mode system to coordinate with (that's an
    editor-only concept) — toolMode here just directly controls map dragging and
    double-click-zoom while a tool is active. */
-let toolMode = 'none'; // 'none' | 'ruler' | 'draw' | 'coord' | 'elevchart' | 'horizon' | 'route'
+let toolMode = 'none'; // 'none' | 'ruler' | 'draw' | 'coord' | 'horizon' | 'route'
 const btnRuler = document.getElementById('btnRuler');
 const btnDraw = document.getElementById('btnDraw');
 const btnCoordPick = document.getElementById('btnCoordPick');
-const btnElevChart = document.getElementById('btnElevChart');
 const btnHorizon = document.getElementById('btnHorizon');
 const btnRoute = document.getElementById('btnRoute');
 const drawToolbar = document.getElementById('drawToolbar');
 const rulerPanel = document.getElementById('rulerPanel');
-const elevChartPanel = document.getElementById('elevChartPanel');
 const horizonPanel = document.getElementById('horizonPanel');
 const routePanel = document.getElementById('routePanel');
 
@@ -3391,15 +3383,13 @@ function setToolMode(newMode) {
   btnRuler.classList.toggle('active-toggle', toolMode === 'ruler');
   btnDraw.classList.toggle('active-toggle', toolMode === 'draw');
   btnCoordPick.classList.toggle('active-toggle', toolMode === 'coord');
-  btnElevChart.classList.toggle('active-toggle', toolMode === 'elevchart');
   btnHorizon.classList.toggle('active-toggle', toolMode === 'horizon');
   btnRoute.classList.toggle('active-toggle', toolMode === 'route');
   drawToolbar.style.display = toolMode === 'draw' ? 'flex' : 'none';
   rulerPanel.style.display = toolMode === 'ruler' ? 'flex' : 'none';
-  elevChartPanel.style.display = toolMode === 'elevchart' ? 'flex' : 'none';
   horizonPanel.style.display = toolMode === 'horizon' ? 'flex' : 'none';
   routePanel.style.display = toolMode === 'route' ? 'flex' : 'none';
-  map.getContainer().classList.toggle('drawing-cursor', toolMode === 'draw' || toolMode === 'coord' || toolMode === 'elevchart' || toolMode === 'horizon' || toolMode === 'route');
+  map.getContainer().classList.toggle('drawing-cursor', toolMode === 'draw' || toolMode === 'coord' || toolMode === 'horizon' || toolMode === 'route');
   // Each tool's own on-map artifact only makes sense while that tool is the
   // one you're actively using — leaving it up after switching away just
   // clutters the map with a stale measurement/sketch/popup from whatever you
@@ -3411,21 +3401,20 @@ function setToolMode(newMode) {
   if (oldMode === 'ruler') rulerClear();
   if (oldMode === 'draw') map.removeLayer(drawLayerGroup);
   if (toolMode === 'draw') drawLayerGroup.addTo(map);
-  if (oldMode === 'elevchart') elevChartClear();
   if (oldMode === 'horizon') horizonClear();
   if (oldMode === 'route') routeClear();
   // Any real tool and the 3D tilt both want exclusive control of dragging/
   // zoom — can't measure or sketch on a tilted, non-interactive preview — so
   // picking a tool always drops out of 3D first.
   if (toolMode !== 'none' && is3DActive) toggle3DView(false);
-  // Ruler, Draw, Elevation, and Route all need the view to hold still for
-  // the whole interaction (Draw's live preview — see the canvas-based
-  // system below — tracks the pointer in screen-pixel space, which only
-  // stays valid if the view can't shift mid-stroke; Ruler/Elevation/Route's
-  // points are placed relative to each other on a fixed view). Coord-
-  // picking and Horizon are both single-tap tools with no such dependency,
-  // so they deliberately leave panning and zooming free.
-  const locksView = toolMode === 'ruler' || toolMode === 'draw' || toolMode === 'elevchart' || toolMode === 'route';
+  // Ruler, Draw, and Route all need the view to hold still for the whole
+  // interaction (Draw's live preview — see the canvas-based system below —
+  // tracks the pointer in screen-pixel space, which only stays valid if the
+  // view can't shift mid-stroke; Ruler/Route's points are placed relative to
+  // each other on a fixed view). Coord-picking and Horizon are both
+  // single-tap tools with no such dependency, so they deliberately leave
+  // panning and zooming free.
+  const locksView = toolMode === 'ruler' || toolMode === 'draw' || toolMode === 'route';
   if (locksView) {
     map.dragging.disable();
     map.doubleClickZoom.disable();
@@ -3445,7 +3434,6 @@ function setToolMode(newMode) {
 }
 btnRuler.addEventListener('click', () => setToolMode(toolMode === 'ruler' ? 'none' : 'ruler'));
 btnDraw.addEventListener('click', () => setToolMode(toolMode === 'draw' ? 'none' : 'draw'));
-btnElevChart.addEventListener('click', () => setToolMode(toolMode === 'elevchart' ? 'none' : 'elevchart'));
 btnHorizon.addEventListener('click', () => setToolMode(toolMode === 'horizon' ? 'none' : 'horizon'));
 btnRoute.addEventListener('click', () => setToolMode(toolMode === 'route' ? 'none' : 'route'));
 btnCoordPick.addEventListener('click', () => setToolMode(toolMode === 'coord' ? 'none' : 'coord'));
@@ -3576,8 +3564,8 @@ document.getElementById('btnRulerClear').addEventListener('click', () => { ruler
 
 /* ---------------- Shared elevation lookup + chart rendering ----------------
    Independent of the Terrain analysis overlay (which only decodes tiles it
-   happens to have on screen, and only while switched on) — Elevation chart,
-   Horizon, and Route all need to look up elevation at arbitrary points at
+   happens to have on screen, and only while switched on) — Horizon and
+   Route & Elevation both need to look up elevation at arbitrary points at
    any time, so this fetches+decodes whatever tile a point falls in on
    demand, from the same free public Terrarium source as everywhere else in
    this file. No despiking here (unlike the 3D view's terrain protocol) —
@@ -3691,45 +3679,6 @@ function buildElevationChartSvg(samples, widthPx, heightPx) {
   <div style="font-size:10.5px;color:var(--sub);margin-top:2px;">Gain <b style="color:var(--good);">+${Math.round(gain)}m</b> · Loss <b style="color:var(--accent2);">-${Math.round(loss)}m</b></div>`;
 }
 
-/* ---------------- Elevation chart tool (standalone, 2+ clicked points) ---------------- */
-let elevChartPoints = [];
-const elevChartLayerGroup = L.layerGroup().addTo(map);
-const elevChartStatsEl = document.getElementById('elevChartStats');
-const elevChartSvgWrapEl = document.getElementById('elevChartSvgWrap');
-
-function elevChartAddPoint(latlng) {
-  elevChartPoints.push(latlng);
-  redrawElevChartPath();
-  updateElevChart();
-}
-function redrawElevChartPath() {
-  elevChartLayerGroup.clearLayers();
-  if (elevChartPoints.length >= 2) L.polyline(elevChartPoints, { color: '#7fc4f0', weight: 2, dashArray: '6 4' }).addTo(elevChartLayerGroup);
-  elevChartPoints.forEach(p => L.circleMarker(p, { radius: 4, color: '#7fc4f0', weight: 2, fillOpacity: 1, fillColor: '#12151a' }).addTo(elevChartLayerGroup));
-}
-let elevChartRequestId = 0;
-async function updateElevChart() {
-  if (elevChartPoints.length < 2) {
-    elevChartStatsEl.textContent = elevChartPoints.length === 1 ? 'Click at least one more point' : 'Click 2+ points on the map';
-    elevChartSvgWrapEl.innerHTML = '';
-    return;
-  }
-  const dist = totalDistanceMeters(elevChartPoints, false);
-  elevChartStatsEl.innerHTML = `Distance <b style="color:var(--good);">${formatDistance(dist)}</b> · ${elevChartPoints.length} points`;
-  const requestId = ++elevChartRequestId;
-  const samples = await sampleElevationAlongPath(elevChartPoints, 80);
-  if (requestId !== elevChartRequestId) return; // a newer point was added while this was in flight
-  elevChartSvgWrapEl.innerHTML = buildElevationChartSvg(samples, 380, 130);
-}
-function elevChartClear() {
-  elevChartPoints = [];
-  elevChartLayerGroup.clearLayers();
-  elevChartStatsEl.textContent = 'Click 2+ points on the map';
-  elevChartSvgWrapEl.innerHTML = '';
-}
-map.on('click', (e) => { if (toolMode === 'elevchart') elevChartAddPoint(e.latlng); });
-document.getElementById('btnElevChartClear').addEventListener('click', elevChartClear);
-
 /* ---------------- Horizon / radio horizon tool ----------------
    Radio horizon distance (km) = 4.12 * sqrt(height in meters) — the
    standard "4/3 Earth radius" approximation used for VHF/UHF line-of-sight
@@ -3771,15 +3720,23 @@ function horizonClear() {
 map.on('click', (e) => { if (toolMode === 'horizon') horizonCalcAt(e.latlng); });
 document.getElementById('btnHorizonClear').addEventListener('click', horizonClear);
 
-/* ---------------- Route planning (car/foot) ----------------
-   Routes and their distance/time come from Valhalla's free public routing
-   instance (no API key/signup, unlike GraphHopper/OpenRouteService) —
-   confirmed reachable with proper CORS for browser use. The elevation
-   profile is this file's own doing, sampled along the returned route
-   geometry with the same lookup the other tools here use, not anything
-   Valhalla provides. */
-let routePoints = []; // up to 2: [start, end]
-let routeProfile = 'auto';
+/* ---------------- Route & Elevation planning (car/foot, multi-vertex) ----------------
+   Click as many points as you like to build a route through them, in order
+   (A→B→C→…), recomputed after every new point — Clear starts a fresh route.
+   Car keeps following real roads via Valhalla's free public routing instance
+   (no API key/signup, unlike GraphHopper/OpenRouteService — confirmed
+   reachable with proper CORS for browser use); Valhalla natively accepts any
+   number of waypoints as one multi-leg trip. Foot is instead a straight line
+   segment-by-segment between the clicked points — no road network to follow
+   on foot in this context, so distance/time come from great-circle-ish
+   planar distance and an assumed walking pace, not a routed path. The
+   elevation profile is this file's own doing either way, sampled along
+   whichever geometry is actually shown (routed shape for car, straight
+   segments for foot) with the same lookup the other tools here use, not
+   anything Valhalla provides. */
+let routePoints = [];
+let routeProfile = 'auto'; // 'auto' (car, routed) | 'foot' (straight line)
+const WALK_SPEED_KMH = 5;
 const routeLayerGroup = L.layerGroup().addTo(map);
 const routeStatsEl = document.getElementById('routeStats');
 const routeElevWrapEl = document.getElementById('routeElevWrap');
@@ -3810,30 +3767,44 @@ function decodePolyline6(str) {
 function routeSetProfile(p) {
   routeProfile = p;
   btnRouteCar.classList.toggle('active-toggle', p === 'auto');
-  btnRouteFoot.classList.toggle('active-toggle', p === 'pedestrian');
-  if (routePoints.length === 2) computeRoute();
+  btnRouteFoot.classList.toggle('active-toggle', p === 'foot');
+  if (routePoints.length >= 2) computeRoute();
 }
 btnRouteCar.addEventListener('click', () => routeSetProfile('auto'));
-btnRouteFoot.addEventListener('click', () => routeSetProfile('pedestrian'));
+btnRouteFoot.addEventListener('click', () => routeSetProfile('foot'));
 
 function routeAddPoint(latlng) {
-  if (routePoints.length >= 2) routeClear(true);
   routePoints.push(latlng);
   redrawRouteMarkers();
-  if (routePoints.length === 2) computeRoute();
-  else routeStatsEl.textContent = 'Click an end point';
+  if (routePoints.length >= 2) computeRoute();
+  else routeStatsEl.textContent = 'Click at least one more point';
 }
 function redrawRouteMarkers() {
   routeLayerGroup.clearLayers();
   routePoints.forEach((p, i) => {
-    L.circleMarker(p, { radius: 5, color: i === 0 ? '#35c98c' : '#e0526a', weight: 2, fillOpacity: 1, fillColor: '#12151a' }).addTo(routeLayerGroup);
+    const isLast = i === routePoints.length - 1 && routePoints.length > 1;
+    const color = i === 0 ? '#35c98c' : isLast ? '#e0526a' : '#f0c419';
+    L.circleMarker(p, { radius: 5, color, weight: 2, fillOpacity: 1, fillColor: '#12151a' }).addTo(routeLayerGroup);
   });
 }
 let routeRequestId = 0;
 async function computeRoute() {
   const requestId = ++routeRequestId;
-  routeStatsEl.textContent = 'Routing…';
   routeElevWrapEl.innerHTML = '';
+  if (routeProfile === 'foot') {
+    routeStatsEl.textContent = 'Calculating…';
+    redrawRouteMarkers();
+    L.polyline(routePoints, { color: '#35c98c', weight: 4, opacity: 0.85, dashArray: '6 4' }).addTo(routeLayerGroup);
+    const km = totalDistanceMeters(routePoints, false) / 1000;
+    const sec = (km / WALK_SPEED_KMH) * 3600;
+    if (requestId !== routeRequestId) return;
+    routeStatsEl.innerHTML = `<b style="color:var(--good);">${km.toFixed(2)} km</b> · ${formatDuration(sec)} walking (straight line)`;
+    const samples = await sampleElevationAlongPath(routePoints, 100);
+    if (requestId !== routeRequestId) return;
+    routeElevWrapEl.innerHTML = buildElevationChartSvg(samples, 380, 130);
+    return;
+  }
+  routeStatsEl.textContent = 'Routing…';
   let data;
   try {
     const resp = await fetch('https://valhalla1.openstreetmap.de/route', {
@@ -3858,20 +3829,21 @@ async function computeRoute() {
   }
   const shape = data.trip.legs.map(leg => decodePolyline6(leg.shape)).flat();
   redrawRouteMarkers();
-  L.polyline(shape, { color: routeProfile === 'auto' ? '#4a72f5' : '#35c98c', weight: 4, opacity: 0.85 }).addTo(routeLayerGroup);
+  L.polyline(shape, { color: '#4a72f5', weight: 4, opacity: 0.85 }).addTo(routeLayerGroup);
   const km = data.trip.summary.length, sec = data.trip.summary.time;
-  routeStatsEl.innerHTML = `<b style="color:var(--good);">${km.toFixed(2)} km</b> · ${formatDuration(sec)} ${routeProfile === 'auto' ? 'driving' : 'walking'}`;
+  routeStatsEl.innerHTML = `<b style="color:var(--good);">${km.toFixed(2)} km</b> · ${formatDuration(sec)} driving`;
   const samples = await sampleElevationAlongPath(shape, 100);
   if (requestId !== routeRequestId) return;
   routeElevWrapEl.innerHTML = buildElevationChartSvg(samples, 380, 130);
 }
-function routeClear(keepStats) {
+function routeClear() {
   routePoints = [];
   routeLayerGroup.clearLayers();
-  if (!keepStats) { routeStatsEl.textContent = 'Click a start point, then an end point'; routeElevWrapEl.innerHTML = ''; }
+  routeStatsEl.textContent = 'Click points on the map to build a route (2+)';
+  routeElevWrapEl.innerHTML = '';
 }
 map.on('click', (e) => { if (toolMode === 'route') routeAddPoint(e.latlng); });
-document.getElementById('btnRouteClear').addEventListener('click', () => routeClear(false));
+document.getElementById('btnRouteClear').addEventListener('click', routeClear);
 
 /* ---------------- Draw tool (local scratchpad only) ----------------
    Not part of the published heatmap-data.json — purely local to this browser,
