@@ -537,7 +537,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v4.6</span>
+      <span class="version-tag">v4.7</span>
     </div>
   </div>
 </div>
@@ -1124,8 +1124,15 @@ function ensure3DMap() {
   // Ground-view placement's click-anywhere targeting (see
   // startGroundViewPlacement) — e.lngLat is MapLibre's own terrain-aware
   // unproject of the click, so this lands on the actual ground surface
-  // under the cursor, not a flat sea-level guess.
-  map3DGL.on('click', (e) => { if (placingGroundView) confirmGroundViewPlacement(e.lngLat); });
+  // under the cursor, not a flat sea-level guess. Once already standing, a
+  // plain click (MapLibre only fires this for an actual tap, not a drag —
+  // the look-around gesture above never triggers it) instead walks the
+  // character to that spot, the other half of the Street View-style
+  // interaction: turn by dragging, move by clicking.
+  map3DGL.on('click', (e) => {
+    if (placingGroundView) confirmGroundViewPlacement(e.lngLat);
+    else if (groundViewActive) walkGroundViewTo(e.lngLat);
+  });
   watchGroundViewZoomOut();
   // The draped overlay (heat/zone fills) is a flat image pinned to whatever
   // patch of ground Leaflet's 2D view was showing the moment 3D opened — it
@@ -1389,14 +1396,31 @@ function enterGroundView(targetLngLat) {
   groundViewPrevState = { center: map3DGL.getCenter(), zoom: map3DGL.getZoom(), pitch: map3DGL.getPitch(), bearing: map3DGL.getBearing() };
   map3DGL.setMaxZoom(GROUND_VIEW_MAX_ZOOM);
   map3DGL.jumpTo({ center: targetLngLat || map3DGL.getCenter(), zoom: Math.max(map3DGL.getZoom(), GROUND_VIEW_ZOOM), pitch: 85 });
-  // A standing person doesn't casually stroll to a new spot by
-  // click-dragging the horizon — disabling native drag-pan keeps the
-  // character planted exactly where it was placed. Looking around (middle-
-  // drag orbit) and zooming stay available; only lateral movement is cut.
+  // A standing person doesn't casually drift to a new spot by dragging the
+  // horizon around, the way an ordinary 3D pan would — disabling native
+  // drag-pan keeps the character exactly where it's put unless it
+  // deliberately walks (see walkGroundViewTo, triggered by clicking a spot
+  // instead of dragging to it). Looking around and zooming stay available.
   map3DGL.dragPan.disable();
   groundViewActive = true;
   groundViewControl._btn.classList.add('active-toggle');
   groundViewControl._btn.title = 'Exit close-up ground view';
+}
+
+// The other half of the Street View-style interaction: drag turns you in
+// place (see updateOrbit), a plain click walks you to that spot instead —
+// center eases over to the clicked ground point while zoom/pitch/bearing
+// all hold steady, so it reads as taking a few steps rather than an
+// instant jump. Duration scales with distance at a rough human walking
+// pace (~1.4 m/s) so a nearby click feels quick and a farther one doesn't
+// snap there instantly, capped so an ambitiously-far click still resolves
+// in a few seconds rather than dragging on.
+function walkGroundViewTo(lngLat) {
+  if (!map3DGL) return;
+  const from = map3DGL.getCenter();
+  const distM = L.latLng(from.lat, from.lng).distanceTo(L.latLng(lngLat.lat, lngLat.lng));
+  const duration = Math.min(4000, Math.max(300, (distM / 1.4) * 1000));
+  map3DGL.easeTo({ center: lngLat, duration });
 }
 
 // Shared teardown for both a deliberate Exit click and the automatic
@@ -1492,14 +1516,19 @@ function updateOrbit(x, y) {
   if (!orbit3DState || !map3DGL) return;
   const dx = x - orbit3DState.x, dy = y - orbit3DState.y;
   const bearing = orbit3DState.bearing + dx * 0.3;
-  // At a fixed zoom/center, pitch and camera altitude are linked — swinging
-  // pitch down toward 0 pulls the camera way up into the air for the same
-  // "distance to ground target," which is what read as a sudden teleport
-  // while standing at ground level. Keeping pitch in a tight band close to
-  // 85 there (instead of the full 0–85 normal-view range) keeps the camera
-  // at roughly eye height throughout the look-around.
-  const [minPitch, maxPitch] = groundViewActive ? [65, 85] : [0, 85];
-  const pitch = Math.min(maxPitch, Math.max(minPitch, orbit3DState.pitch + dy * 0.3));
+  if (groundViewActive) {
+    // Street View-style look-around, not an orbit: turning left/right only
+    // ever changes which way the character is FACING, never its height off
+    // the ground. Letting drag also drive pitch (like normal 3D's orbit
+    // does) is exactly what reads as "orbiting" — at a fixed zoom, pitch
+    // and camera altitude are geometrically linked, so tilting the view
+    // swings the camera up through the air around a distant point instead
+    // of just turning your head. Pitch stays exactly where enterGroundView
+    // set it (85) for the whole time you're standing.
+    map3DGL.jumpTo({ bearing });
+    return;
+  }
+  const pitch = Math.min(85, Math.max(0, orbit3DState.pitch + dy * 0.3));
   map3DGL.jumpTo({ bearing, pitch });
 }
 function endOrbit() {
