@@ -537,7 +537,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v4.4</span>
+      <span class="version-tag">v4.5</span>
     </div>
   </div>
 </div>
@@ -1126,6 +1126,7 @@ function ensure3DMap() {
   // unproject of the click, so this lands on the actual ground surface
   // under the cursor, not a flat sea-level guess.
   map3DGL.on('click', (e) => { if (placingGroundView) confirmGroundViewPlacement(e.lngLat); });
+  watchGroundViewZoomOut();
   // The draped overlay (heat/zone fills) is a flat image pinned to whatever
   // patch of ground Leaflet's 2D view was showing the moment 3D opened — it
   // does NOT grow or follow the camera on its own. Panning far enough (or
@@ -1388,18 +1389,52 @@ function enterGroundView(targetLngLat) {
   groundViewPrevState = { center: map3DGL.getCenter(), zoom: map3DGL.getZoom(), pitch: map3DGL.getPitch(), bearing: map3DGL.getBearing() };
   map3DGL.setMaxZoom(GROUND_VIEW_MAX_ZOOM);
   map3DGL.jumpTo({ center: targetLngLat || map3DGL.getCenter(), zoom: Math.max(map3DGL.getZoom(), GROUND_VIEW_ZOOM), pitch: 85 });
+  // A standing person doesn't casually stroll to a new spot by
+  // click-dragging the horizon — disabling native drag-pan keeps the
+  // character planted exactly where it was placed. Looking around (middle-
+  // drag orbit) and zooming stay available; only lateral movement is cut.
+  map3DGL.dragPan.disable();
   groundViewActive = true;
   groundViewControl._btn.classList.add('active-toggle');
   groundViewControl._btn.title = 'Exit close-up ground view';
 }
 
-function exitGroundView() {
-  if (!groundViewActive) return;
+// Shared teardown for both a deliberate Exit click and the automatic
+// zoom-out release below — always restores the normal maxZoom/dragPan
+// state, but does NOT always snap the camera back (see the zoom listener).
+function deactivateGroundView() {
   groundViewActive = false;
-  if (groundViewPrevState) map3DGL.jumpTo(groundViewPrevState);
   map3DGL.setMaxZoom(15);
+  map3DGL.dragPan.enable();
   groundViewControl._btn.classList.remove('active-toggle');
   groundViewControl._btn.title = 'Stand at ground level here (click to place yourself)';
+}
+
+function exitGroundView() {
+  if (!groundViewActive) return;
+  if (groundViewPrevState) map3DGL.jumpTo(groundViewPrevState);
+  deactivateGroundView();
+}
+
+// Zooming out while "standing" means the user wants to move on, not linger
+// at an 85°-pitch view stretched across a kilometers-wide area — that
+// combination is a degenerate camera angle the terrain renderer can't
+// handle cleanly (shows up as smeared, torn-looking vertical banding, the
+// close cousin of "phasing under the map"). Rather than snapping all the
+// way back to wherever the camera was before placement (a jarring jump
+// away from wherever the user just scrolled to), this drops the ground-
+// view-only maxZoom allowance and lets ordinary 3D panning/zooming take
+// over right where they are — the live zoom itself does settle at the
+// standard 15 ceiling in the same motion, since that's what governs normal
+// 3D browsing everywhere else in this app, but bearing/pitch/center all
+// carry over untouched.
+function watchGroundViewZoomOut() {
+  map3DGL.on('zoom', () => {
+    if (groundViewActive && map3DGL.getZoom() < GROUND_VIEW_ZOOM - 1) {
+      groundViewPrevState = null;
+      deactivateGroundView();
+    }
+  });
 }
 
 function toggle3DView(on) {
