@@ -454,7 +454,7 @@
       <button id="btnCoordPick" style="flex:1;" title="Tap anywhere on the map to look up its coordinates — easier on mobile than right-click. Long-pressing the map does the same thing even without this on."><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="7"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/></svg> Coords</button>
     </div>
     <div class="toolbar">
-      <button id="btnHorizon" style="flex:1;" title="Click a point to calculate how far you could see (or transmit a radio signal) from there, accounting for the Earth's curvature"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><line x1="4" y1="12" x2="20" y2="12" stroke-dasharray="2 2"/></svg> Horizon</button>
+      <button id="btnHorizon" style="flex:1;" title="Click a point to see how far you could actually see from there — traces the real line-of-sight boundary in every direction, accounting for the Earth's curvature and any hills/terrain blocking the view, not just a flat-ground estimate"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><line x1="4" y1="12" x2="20" y2="12" stroke-dasharray="2 2"/></svg> Horizon</button>
       <button id="btnRoute" style="flex:1;" title="Plan a route through two or more points — shows distance, time, and an elevation profile. Car follows roads; Foot is a straight line between points."><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="5" r="2.5"/><path d="M8 18C14 18 10 8 16 7"/></svg> Route &amp; Elevation</button>
     </div>
     <div class="overlay-section">
@@ -537,7 +537,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v4.9</span>
+      <span class="version-tag">v5.0</span>
     </div>
   </div>
 </div>
@@ -3786,8 +3786,8 @@ function fetchElevTile(z, x, y) {
   elevTileCache.set(key, p);
   return p;
 }
-async function fetchElevationAt(latlng) {
-  const z = ELEV_LOOKUP_ZOOM;
+async function fetchElevationAt(latlng, zoomOverride) {
+  const z = zoomOverride || ELEV_LOOKUP_ZOOM;
   const point = map.project(latlng, z);
   const tileX = Math.floor(point.x / 256), tileY = Math.floor(point.y / 256);
   const tile = await fetchElevTile(z, tileX, tileY);
@@ -3949,42 +3949,134 @@ function wireElevationChartHover(wrapEl, samples, widthPx, heightPx) {
   svg.addEventListener('touchend', hide);
 }
 
-/* ---------------- Horizon / radio horizon tool ----------------
-   Radio horizon distance (km) = 4.12 * sqrt(height in meters) — the
-   standard "4/3 Earth radius" approximation used for VHF/UHF line-of-sight
-   planning, which accounts for the small amount of extra reach atmospheric
-   refraction gives radio waves over the geometric optical horizon (that
-   pure geometric horizon would be ~3.57 * sqrt(h) — noticeably shorter).
-   Height is ground elevation at the clicked point plus an editable
-   observer/antenna height (defaults to 1.8m, an average adult). */
-let horizonMarker = null, horizonCircle = null;
+/* ---------------- Horizon tool: terrain-aware line of sight ----------------
+   Casts a ray outward from the clicked point along many bearings, sampling
+   elevation at increasing distances along each one, and finds how far you
+   can actually see before something — a hill, a ridge, anything taller than
+   everything closer to you along that same line — blocks the view. The
+   result is a (generally irregular, not circular) boundary, unlike a plain
+   radio-horizon circle which assumes flat ground the whole way out.
+
+   The visibility test per sample point is the standard horizon-angle
+   algorithm: a point is visible if its apparent elevation angle (as seen
+   from the observer's eye) is at least as high as every closer point's
+   angle along the same ray — equivalently, once some closer terrain sets a
+   new "angle to beat," anything behind it that doesn't clear that angle is
+   hidden behind it, exactly like walking toward a hill and watching
+   everything beyond its ridgeline disappear.
+
+   "Apparent elevation angle" itself has to account for Earth's curvature —
+   without it, distant terrain would read as impossibly tall. Points are
+   compared via curvature-adjusted angle = (elevation - drop - eyeLevel) /
+   distance, where drop = distance² / (2 * effective Earth radius). Using
+   the SAME 4/3-Earth-radius refraction convention as the old plain formula
+   below (not the true radius) keeps this consistent with it — solving that
+   drop formula for distance when it exactly cancels a given height
+   reproduces 4.12*sqrt(h) almost exactly, confirming the two approaches
+   agree in the (also seen: no terrain in the way) case they should. */
+const EARTH_RADIUS_EFFECTIVE_M = 6371000 * 4 / 3;
+const HORIZON_NUM_BEARINGS = 60;
+const HORIZON_SAMPLES_PER_RAY = 32;
+const HORIZON_MAX_RANGE_CAP_M = 80000; // safety cap — an observer on a very tall point could otherwise ask for a huge, slow-to-sample area
+// A full scan is up to 1920 sample points spread over a potentially 80km-wide
+// area — at the other tools' zoom-14 lookup (each tile covering only ~2-3km),
+// that meant hundreds of DISTINCT tile fetches and measured 30-45+ seconds,
+// most of it just waiting on network round-trips past the browser's per-origin
+// connection limit. Each zoom step down covers 2x the linear distance per
+// tile, so zoom 11 covers 8x more per tile (~64x fewer tiles for the same
+// area) — coarser resolution (~150-300m/px depending on latitude) than the
+// other tools use, but this scan is about whether a hill-sized landform
+// blocks the view over kilometers, not resolving individual buildings, so
+// the trade is the right one here specifically.
+const HORIZON_ELEV_ZOOM = 11;
+
+// Great-circle destination point, distM out from latlng along bearingDeg —
+// needed to place each ray's sample points; Leaflet has no built-in for this.
+function destinationPoint(latlng, bearingDeg, distM) {
+  const R = 6371000;
+  const brng = bearingDeg * Math.PI / 180;
+  const lat1 = latlng.lat * Math.PI / 180, lng1 = latlng.lng * Math.PI / 180;
+  const dR = distM / R;
+  const lat2 = Math.asin(Math.sin(lat1) * Math.cos(dR) + Math.cos(lat1) * Math.sin(dR) * Math.cos(brng));
+  const lng2 = lng1 + Math.atan2(Math.sin(brng) * Math.sin(dR) * Math.cos(lat1), Math.cos(dR) - Math.sin(lat1) * Math.sin(lat2));
+  return L.latLng(lat2 * 180 / Math.PI, ((lng2 * 180 / Math.PI) + 540) % 360 - 180);
+}
+
+let horizonMarker = null, horizonShape = null, horizonPoint = null;
+let horizonRequestId = 0;
 const horizonResultEl = document.getElementById('horizonResult');
 const horizonHeightInput = document.getElementById('horizonHeight');
-let horizonPoint = null;
+
 async function horizonCalcAt(latlng) {
   horizonPoint = latlng;
-  horizonResultEl.textContent = 'Looking up elevation…';
-  const groundElev = await fetchElevationAt(latlng);
-  if (horizonPoint !== latlng) return; // superseded by a newer click
-  redrawHorizon(groundElev);
+  await computeAndDrawHorizon();
 }
-function redrawHorizon(groundElev) {
+// Re-run on every height-input change too, not just a fresh click — refetching
+// sounds wasteful, but fetchElevationAt's own tile cache means everything
+// within the previous range comes back instantly, so this only actually costs
+// network time for the NEWLY-extended area when height (and so range) grows.
+async function computeAndDrawHorizon() {
   if (!horizonPoint) return;
+  const requestId = ++horizonRequestId;
+  horizonResultEl.textContent = 'Calculating line-of-sight horizon…';
+  const groundElev = await fetchElevationAt(horizonPoint);
+  if (requestId !== horizonRequestId) return;
   const observerH = parseFloat(horizonHeightInput.value) || 0;
-  const totalH = Math.max((groundElev || 0) + observerH, 0);
-  const distKm = 4.12 * Math.sqrt(totalH);
+  const eyeAbs = Math.max((groundElev || 0) + observerH, 0);
+  const maxRangeM = Math.min(HORIZON_MAX_RANGE_CAP_M, Math.max(500, 4120 * Math.sqrt(eyeAbs)));
+  // Quadratic spacing — denser sampling close to the observer (where a small
+  // obstacle matters most) and progressively sparser farther out (where
+  // resolving individual obstacles matters less relative to the distance).
+  const rayDists = [];
+  for (let i = 1; i <= HORIZON_SAMPLES_PER_RAY; i++) {
+    const t = i / HORIZON_SAMPLES_PER_RAY;
+    rayDists.push(maxRangeM * t * t);
+  }
+  const rays = [];
+  for (let b = 0; b < HORIZON_NUM_BEARINGS; b++) {
+    const bearing = (360 / HORIZON_NUM_BEARINGS) * b;
+    rays.push({ bearing, latlngs: rayDists.map(d => destinationPoint(horizonPoint, bearing, d)) });
+  }
+  const allElevs = await Promise.all(rays.flatMap(r => r.latlngs).map(p => fetchElevationAt(p, HORIZON_ELEV_ZOOM)));
+  if (requestId !== horizonRequestId) return;
+  let idx = 0;
+  const frontier = [];
+  let minDist = Infinity, maxDist = 0, sumDist = 0, visibleRays = 0;
+  for (const ray of rays) {
+    let runningMaxAngle = -Infinity, lastVisibleDist = 0, lastVisibleLatLng = horizonPoint;
+    for (let i = 0; i < rayDists.length; i++) {
+      const e = allElevs[idx++];
+      if (e === null || e === undefined) continue; // no data for this sample — skip, don't let it falsely block/pass
+      const d = rayDists[i];
+      const angle = (e - (d * d) / (2 * EARTH_RADIUS_EFFECTIVE_M) - eyeAbs) / d;
+      if (angle >= runningMaxAngle) {
+        runningMaxAngle = angle;
+        lastVisibleDist = d;
+        lastVisibleLatLng = ray.latlngs[i];
+      }
+    }
+    frontier.push(lastVisibleLatLng);
+    if (lastVisibleDist > 0) {
+      minDist = Math.min(minDist, lastVisibleDist);
+      maxDist = Math.max(maxDist, lastVisibleDist);
+      sumDist += lastVisibleDist;
+      visibleRays++;
+    }
+  }
   if (horizonMarker) map.removeLayer(horizonMarker);
-  if (horizonCircle) map.removeLayer(horizonCircle);
+  if (horizonShape) map.removeLayer(horizonShape);
   horizonMarker = L.circleMarker(horizonPoint, { radius: 5, color: '#ff9e4a', weight: 2, fillOpacity: 1, fillColor: '#12151a' }).addTo(map);
-  horizonCircle = L.circle(horizonPoint, { radius: distKm * 1000, color: '#ff9e4a', weight: 2, fillOpacity: 0.05, dashArray: '5 5' }).addTo(map);
-  const elevText = groundElev === null ? 'unknown (using observer height only)' : Math.round(groundElev) + 'm ground';
-  horizonResultEl.innerHTML = `Radio horizon <b style="color:var(--good);">${distKm.toFixed(1)} km</b> (${elevText} + ${observerH}m)`;
+  horizonShape = L.polygon(frontier, { color: '#ff9e4a', weight: 2, fillOpacity: 0.05, dashArray: '5 5' }).addTo(map);
+  const elevText = groundElev === null ? 'unknown ground' : Math.round(groundElev) + 'm ground';
+  const avgDist = visibleRays ? sumDist / visibleRays : 0;
+  horizonResultEl.innerHTML = `Line of sight <b style="color:var(--good);">${formatDistance(minDist === Infinity ? 0 : minDist)}–${formatDistance(maxDist)}</b>, ${formatDistance(avgDist)} avg (${elevText} + ${observerH}m)`;
 }
-horizonHeightInput.addEventListener('input', () => { if (horizonPoint) fetchElevationAt(horizonPoint).then(redrawHorizon); });
+horizonHeightInput.addEventListener('input', () => { if (horizonPoint) computeAndDrawHorizon(); });
 function horizonClear() {
   horizonPoint = null;
+  horizonRequestId++; // invalidates any in-flight calculation
   if (horizonMarker) { map.removeLayer(horizonMarker); horizonMarker = null; }
-  if (horizonCircle) { map.removeLayer(horizonCircle); horizonCircle = null; }
+  if (horizonShape) { map.removeLayer(horizonShape); horizonShape = null; }
   horizonResultEl.textContent = 'Click a point on the map';
 }
 map.on('click', (e) => { if (toolMode === 'horizon') horizonCalcAt(e.latlng); });
