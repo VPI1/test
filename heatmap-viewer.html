@@ -122,13 +122,13 @@
   #crosshair{position:absolute;top:50%;left:50%;width:0;height:0;z-index:2;display:none;pointer-events:none;}
   #crosshair.active{display:block;}
   .ch-line{position:absolute;background:var(--text);opacity:.6;box-shadow:0 0 2px #0008;}
-  .ch-h{width:22px;height:1px;top:0;left:-11px;}
-  .ch-v{width:1px;height:22px;top:-11px;left:0;}
-  /* Invisible except on hover/tap — radius (15px) is slightly larger than
-     the crosshair's own arm length (11px) per the spec, so the hotspot is
+  .ch-h{width:30px;height:1.5px;top:0;left:-15px;}
+  .ch-v{width:1.5px;height:30px;top:-15px;left:0;}
+  /* Invisible except on hover/tap — radius (20px) is slightly larger than
+     the crosshair's own arm length (15px) per the spec, so the hotspot is
      easy to land on without being so large it feels arbitrary. */
   .ch-hotspot{
-    position:absolute;top:-15px;left:-15px;width:30px;height:30px;border-radius:50%;
+    position:absolute;top:-20px;left:-20px;width:40px;height:40px;border-radius:50%;
     pointer-events:auto;cursor:pointer;background:transparent;transition:background .12s;
   }
   .ch-hotspot:hover, .ch-hotspot.tapped{background:#ffffff26;}
@@ -362,6 +362,13 @@
   .panel-header-row{display:flex;align-items:center;justify-content:space-between;gap:8px;}
   .horizon-progress-track{width:100%;height:4px;background:var(--border);border-radius:2px;overflow:hidden;display:none;}
   .horizon-progress-fill{height:100%;width:0%;background:var(--accent);transition:width .12s linear;}
+  .horizon-history-list{display:flex;flex-wrap:wrap;gap:5px;max-height:70px;overflow-y:auto;}
+  .horizon-history-item{
+    padding:3px 7px;border-radius:5px;border:1px solid var(--border);background:transparent;
+    color:inherit;cursor:pointer;font-size:10.5px;white-space:nowrap;
+  }
+  .horizon-history-item:hover{border-color:var(--accent);}
+  .horizon-history-item.active{background:var(--accent);border-color:var(--accent);color:#fff;}
   .panel-stat b{color:var(--good);}
   .panel-height-input{
     width:52px;background:#00000030;border:1px solid var(--border);color:var(--text);
@@ -540,7 +547,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v5.1</span>
+      <span class="version-tag">v5.2</span>
     </div>
   </div>
 </div>
@@ -623,6 +630,7 @@
   </div>
   <span class="panel-stat" id="horizonResult">Click a point on the map</span>
   <div class="horizon-progress-track" id="horizonProgressTrack"><div class="horizon-progress-fill" id="horizonProgressFill"></div></div>
+  <div class="horizon-history-list" id="horizonHistoryList" title="Past calculations at this session — click one to see it again without recalculating. Also marked on the map as small dots while this tool is active."></div>
 </div>
 
 <div id="routePanel">
@@ -643,7 +651,7 @@
     <div class="info-modal-body">
       <h3>General info</h3>
       <p>This map is designed to offer a new modern cartographic interpretation to the Ukraine-Russia war by taking into account its main characteristics, fragmentation of the contact line and infiltrations and introducing a new map visualization technique: the heatmap opposed to plain polygons, which already some time ago has been suggested by some soldiers, that highlight how it's impossible to accurately describe what's happening at the front with only a red and gray zone without packing in them dozens of shades of situations, thereby making this system very confusing to viewers.</p>
-      <p>In this case, the heatmap represents a gradient of Russian capability and actual frequency of infiltrations, ranging from one-time infiltrations, to occasional, and to frequent/consistent, everyday infiltrations.</p>
+      <p>In this case, the heatmap represents a gradient of Russian infiltration capability, ranging from one-time infiltrations, to occasional, and to frequent/consistent, everyday infiltrations.</p>
       <p>I don't have precise enough information on every part of the front to say for certain whether or how often infiltrations are happening there — I still try to make the best use of what information I do have available. The heatmap is meant as an alternative, more nuanced representation of that same underlying data, not a pixel-perfect record of what's happening at any single point: it's still built on the same information the polygons-based representation uses.</p>
       <p>It is likely that the main system will be refined in the future.</p>
       <p>This map is also designed to offer users with a much wider range of tools to improve situational awareness and information.</p>
@@ -1134,13 +1142,17 @@ function ensure3DMap() {
   // startGroundViewPlacement) — e.lngLat is MapLibre's own terrain-aware
   // unproject of the click, so this lands on the actual ground surface
   // under the cursor, not a flat sea-level guess. Once already standing, a
-  // plain click (MapLibre only fires this for an actual tap, not a drag —
-  // the look-around gesture above never triggers it) instead walks the
-  // character to that spot, the other half of the Street View-style
-  // interaction: turn by dragging, move by clicking.
+  // plain click instead walks the character to that spot, the other half
+  // of the Street View-style interaction: turn by dragging, move by
+  // clicking. The !orbit3DMoved check is required, not defensive
+  // decoration — MapLibre normally suppresses 'click' after a real drag on
+  // its own, but that suppression turned out to be tied to dragPan, which
+  // ground view deliberately disables (see enterGroundView), so without
+  // this every turn-drag's release ALSO fired a click and walked the
+  // character to wherever the drag ended.
   map3DGL.on('click', (e) => {
     if (placingGroundView) confirmGroundViewPlacement(e.lngLat);
-    else if (groundViewActive) walkGroundViewTo(e.lngLat);
+    else if (groundViewActive && !orbit3DMoved) walkGroundViewTo(e.lngLat);
   });
   watchGroundViewZoomOut();
   // The draped overlay (heat/zone fills) is a flat image pinned to whatever
@@ -1517,13 +1529,37 @@ function toggle3DView(on) {
 // yourself, no modifier key required. Middle-drag still works too, for
 // muscle-memory consistency with normal 3D browsing.
 let orbit3DState = null;
+// Set the moment any real drag movement happens, cleared again on the next
+// mousedown — map3DGL.on('click', ...) below checks this to tell "this was
+// a tap" from "this was the tail end of a turn-in-place drag," since
+// disabling dragPan for ground view (see enterGroundView) also disabled
+// MapLibre's own internal drag-vs-click distance tracking, so without this
+// it fired 'click' — and so walkGroundViewTo — after EVERY drag release.
+let orbit3DMoved = false;
 function startOrbit(x, y) {
   orbit3DState = { x, y, bearing: map3DGL.getBearing(), pitch: map3DGL.getPitch() };
+  orbit3DMoved = false;
+  if (groundViewActive) {
+    // Anchor a near-ground screen point — NOT dead center, which at this
+    // pitch (85°, near-horizontal) projects to a point far in the
+    // distance, not underfoot — and remember what ground point is under it
+    // right now. updateOrbit then re-pans after every bearing change to
+    // bring that SAME ground point back under that SAME screen spot,
+    // canceling the sideways drift changing bearing would otherwise cause.
+    // Without this, MapLibre's camera orbits the (very distant) `center`
+    // point as bearing changes — correct for normal 3D browsing, but at
+    // ground level it reads as circling around whatever you're looking at
+    // instead of turning your own head while standing still.
+    const canvas = map3DGL.getCanvas();
+    orbit3DState.anchorScreenPt = [canvas.clientWidth / 2, canvas.clientHeight * 0.9];
+    orbit3DState.anchorLngLat = map3DGL.unproject(orbit3DState.anchorScreenPt);
+  }
   map3DContainerEl.classList.add('orbiting');
 }
 function updateOrbit(x, y) {
   if (!orbit3DState || !map3DGL) return;
   const dx = x - orbit3DState.x, dy = y - orbit3DState.y;
+  if (Math.abs(dx) > 3 || Math.abs(dy) > 3) orbit3DMoved = true;
   const bearing = orbit3DState.bearing + dx * 0.3;
   if (groundViewActive) {
     // Street View-style look-around, not an orbit: turning left/right only
@@ -1535,6 +1571,12 @@ function updateOrbit(x, y) {
     // of just turning your head. Pitch stays exactly where enterGroundView
     // set it (85) for the whole time you're standing.
     map3DGL.jumpTo({ bearing });
+    const driftedLngLat = map3DGL.unproject(orbit3DState.anchorScreenPt);
+    const center = map3DGL.getCenter();
+    map3DGL.jumpTo({ center: [
+      center.lng + (orbit3DState.anchorLngLat.lng - driftedLngLat.lng),
+      center.lat + (orbit3DState.anchorLngLat.lat - driftedLngLat.lat)
+    ] });
     return;
   }
   const pitch = Math.min(85, Math.max(0, orbit3DState.pitch + dy * 0.3));
@@ -1768,7 +1810,7 @@ function setBasemap(key) {
   apply3DBasemapLayer(key); // no-op if 3D has never been opened (map3DGL still null)
 }
 
-/* ---------------- Legend (Red/Blue "infiltration frequency" palettes only) ---------------- */
+/* ---------------- Legend (Red/Blue "infiltration capability" palettes only) ---------------- */
 const LEGEND_LOW_LABEL = 'One-time';
 const LEGEND_HIGH_LABEL = 'Constant';
 
@@ -1814,7 +1856,7 @@ function updateLegend() {
     return;
   }
   container.style.display = 'block';
-  container.querySelector('.legend-title').textContent = layer.name + ' — infiltration frequency';
+  container.querySelector('.legend-title').textContent = layer.name + ' — infiltration capability';
   container.querySelector('.legend-bar').style.background = gradientCss(layer.gradient);
 }
 
@@ -2004,7 +2046,7 @@ const HeatmapLegendControl = L.Control.extend({
     const container = L.DomUtil.create('div', 'legend-control');
     container.style.display = 'none';
     container.innerHTML = `
-      <div class="legend-title">Infiltration frequency</div>
+      <div class="legend-title">Infiltration capability</div>
       <div class="legend-bar" style="background:linear-gradient(90deg,#2244cc,#22aacc,#ffcc00,#ff3300);"></div>
       <div class="legend-labels"><span>One-time infiltration</span><span>Constant infiltration</span></div>
     `;
@@ -3600,7 +3642,8 @@ function setToolMode(newMode) {
   if (oldMode === 'ruler') rulerClear();
   if (oldMode === 'draw') map.removeLayer(drawLayerGroup);
   if (toolMode === 'draw') drawLayerGroup.addTo(map);
-  if (oldMode === 'horizon') horizonClear();
+  if (oldMode === 'horizon') { horizonClear(); map.removeLayer(horizonHistoryLayerGroup); }
+  if (toolMode === 'horizon') horizonHistoryLayerGroup.addTo(map);
   if (oldMode === 'route') routeClear();
   // Any real tool and the 3D tilt both want exclusive control of dragging/
   // zoom — can't measure or sketch on a tilted, non-interactive preview — so
@@ -4023,8 +4066,26 @@ let horizonRequestId = 0;
 const horizonResultEl = document.getElementById('horizonResult');
 const horizonProgressTrack = document.getElementById('horizonProgressTrack');
 const horizonProgressFill = document.getElementById('horizonProgressFill');
+const horizonHistoryListEl = document.getElementById('horizonHistoryList');
 const btnHorizonCoarse = document.getElementById('btnHorizonCoarse');
 const btnHorizonPrecise = document.getElementById('btnHorizonPrecise');
+
+// Past calculations, kept in memory for the rest of the session so
+// revisiting one (after switching tools, or just clicking a new point and
+// wanting the old one back) doesn't mean redoing a scan that can take over
+// a minute in Precise mode. Each entry carries everything drawHorizonResult
+// needs to redraw it — nothing gets recomputed on revisit, only redrawn.
+// Capped rather than unbounded so a long session doesn't quietly pile up
+// hundreds of small always-on map markers.
+let horizonHistory = [];
+let horizonHistoryIdCounter = 1;
+let horizonActiveHistoryId = null;
+const HORIZON_HISTORY_MAX = 20;
+// Not added to the map by default — see setToolMode, which adds/removes
+// this alongside entering/leaving the Horizon tool, so the little "you
+// calculated here before" dots (and their click-to-revisit) only clutter
+// the map while this tool is actually the one in use.
+const horizonHistoryLayerGroup = L.layerGroup();
 
 function horizonSetPrecision(precise) {
   horizonPrecise = precise;
@@ -4108,22 +4169,65 @@ async function computeAndDrawHorizon() {
       visibleRays++;
     }
   }
+  const entry = {
+    point: horizonPoint, precise: horizonPrecise, frontier, groundElev,
+    minDist: minDist === Infinity ? 0 : minDist, maxDist,
+    avgDist: visibleRays ? sumDist / visibleRays : 0
+  };
+  addHorizonHistoryEntry(entry);
+  drawHorizonResult(entry);
+}
+// Draws a result (fresh or from history) without touching the network —
+// everything it needs is already on the entry object.
+function drawHorizonResult(entry) {
+  horizonPoint = entry.point;
   if (horizonMarker) map.removeLayer(horizonMarker);
   if (horizonShape) map.removeLayer(horizonShape);
-  horizonMarker = L.circleMarker(horizonPoint, { radius: 5, color: '#ff9e4a', weight: 2, fillOpacity: 1, fillColor: '#12151a' }).addTo(map);
-  horizonShape = L.polygon(frontier, { color: '#ff9e4a', weight: 2, fillOpacity: 0.05, dashArray: '5 5' }).addTo(map);
+  horizonMarker = L.circleMarker(entry.point, { radius: 5, color: '#ff9e4a', weight: 2, fillOpacity: 1, fillColor: '#12151a' }).addTo(map);
+  horizonShape = L.polygon(entry.frontier, { color: '#ff9e4a', weight: 2, fillOpacity: 0.05, dashArray: '5 5' }).addTo(map);
   horizonProgressTrack.style.display = 'none';
-  const elevText = groundElev === null ? 'unknown ground' : Math.round(groundElev) + 'm ground';
-  const avgDist = visibleRays ? sumDist / visibleRays : 0;
-  horizonResultEl.innerHTML = `Line of sight <b style="color:var(--good);">${formatDistance(minDist === Infinity ? 0 : minDist)}–${formatDistance(maxDist)}</b>, ${formatDistance(avgDist)} avg (${elevText}, ${HORIZON_EYE_HEIGHT_M}m eye)`;
+  const elevText = entry.groundElev === null ? 'unknown ground' : Math.round(entry.groundElev) + 'm ground';
+  horizonResultEl.innerHTML = `Line of sight <b style="color:var(--good);">${formatDistance(entry.minDist)}–${formatDistance(entry.maxDist)}</b>, ${formatDistance(entry.avgDist)} avg (${elevText}, ${HORIZON_EYE_HEIGHT_M}m eye)${entry.precise ? ' · precise' : ''}`;
+}
+function addHorizonHistoryEntry(entry) {
+  entry.id = horizonHistoryIdCounter++;
+  entry.dotMarker = L.circleMarker(entry.point, { radius: 4, color: '#ff9e4a', weight: 1.5, fillOpacity: 0.6, fillColor: '#ff9e4a' })
+    .addTo(horizonHistoryLayerGroup)
+    .on('click', (e) => { L.DomEvent.stopPropagation(e); showHorizonHistoryEntry(entry.id); });
+  horizonHistory.unshift(entry);
+  horizonActiveHistoryId = entry.id;
+  if (horizonHistory.length > HORIZON_HISTORY_MAX) {
+    const removed = horizonHistory.pop();
+    horizonHistoryLayerGroup.removeLayer(removed.dotMarker);
+  }
+  renderHorizonHistoryList();
+}
+function showHorizonHistoryEntry(id) {
+  const entry = horizonHistory.find(h => h.id === id);
+  if (!entry) return;
+  horizonRequestId++; // cancel any in-flight fresh calculation — this is taking over now
+  horizonActiveHistoryId = id;
+  drawHorizonResult(entry);
+  renderHorizonHistoryList();
+}
+function renderHorizonHistoryList() {
+  if (!horizonHistory.length) { horizonHistoryListEl.innerHTML = ''; return; }
+  horizonHistoryListEl.innerHTML = horizonHistory.map(h =>
+    `<button class="horizon-history-item${h.id === horizonActiveHistoryId ? ' active' : ''}" data-id="${h.id}" title="${formatDistance(h.minDist)}–${formatDistance(h.maxDist)} range${h.precise ? ' · precise' : ''}">${formatDistance(h.avgDist)} avg</button>`
+  ).join('');
+  horizonHistoryListEl.querySelectorAll('.horizon-history-item').forEach(btn => {
+    btn.addEventListener('click', () => showHorizonHistoryEntry(+btn.dataset.id));
+  });
 }
 function horizonClear() {
   horizonPoint = null;
+  horizonActiveHistoryId = null;
   horizonRequestId++; // invalidates any in-flight calculation
   if (horizonMarker) { map.removeLayer(horizonMarker); horizonMarker = null; }
   if (horizonShape) { map.removeLayer(horizonShape); horizonShape = null; }
   horizonProgressTrack.style.display = 'none';
   horizonResultEl.textContent = 'Click a point on the map';
+  renderHorizonHistoryList();
 }
 map.on('click', (e) => { if (toolMode === 'horizon') horizonCalcAt(e.latlng); });
 document.getElementById('btnHorizonClear').addEventListener('click', horizonClear);
