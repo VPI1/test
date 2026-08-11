@@ -681,7 +681,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v5.3</span>
+      <span class="version-tag">v5.4</span>
     </div>
   </div>
 </div>
@@ -7607,8 +7607,15 @@ function drawHorizonResult(entry) {
   horizonPoint = entry.point;
   if (horizonMarker) map.removeLayer(horizonMarker);
   if (horizonShape) map.removeLayer(horizonShape);
-  horizonMarker = L.circleMarker(entry.point, { radius: 5, color: '#ff9e4a', weight: 2, fillOpacity: 1, fillColor: '#12151a' }).addTo(map);
-  horizonShape = L.polygon(entry.frontier, { color: '#ff9e4a', weight: 2, fillOpacity: 0.05, dashArray: '5 5' }).addTo(map);
+  // interactive:false on both — they're purely visual (redrawn on top of
+  // everything, including history dots, every time). Without this they
+  // swallow clicks meant for whatever's underneath: clicking a history dot
+  // that happened to fall inside the currently-displayed frontier polygon
+  // hit the polygon instead (its fill is faint, not literally invisible to
+  // hit-testing), which bubbled to the map's own click handler and started
+  // a brand new calculation right next to the dot instead of revisiting it.
+  horizonMarker = L.circleMarker(entry.point, { radius: 5, color: '#ff9e4a', weight: 2, fillOpacity: 1, fillColor: '#12151a', interactive: false }).addTo(map);
+  horizonShape = L.polygon(entry.frontier, { color: '#ff9e4a', weight: 2, fillOpacity: 0.05, dashArray: '5 5', interactive: false }).addTo(map);
   horizonProgressTrack.style.display = 'none';
   const elevText = entry.groundElev === null ? 'unknown ground' : Math.round(entry.groundElev) + 'm ground';
   horizonResultEl.innerHTML = `Line of sight <b style="color:var(--good);">${formatDistance(entry.minDist)}–${formatDistance(entry.maxDist)}</b>, ${formatDistance(entry.avgDist)} avg (${elevText}, ${HORIZON_EYE_HEIGHT_M}m eye)${entry.precise ? ' · precise' : ''}`;
@@ -7681,6 +7688,12 @@ function renderHorizonHistoryList() {
     btn.addEventListener('click', () => showHorizonHistoryEntry(+btn.dataset.id));
   });
 }
+// Clears only the currently-displayed shape/marker/text — used when
+// switching away from the Horizon tool (see setToolMode), where wiping
+// saved history or asking for confirmation would be surprising. The Clear
+// BUTTON itself (wired below) additionally wipes history, behind a
+// confirmation, since that's a destructive, hard-to-undo action a stray
+// click shouldn't be able to trigger by itself.
 function horizonClear() {
   horizonPoint = null;
   horizonActiveHistoryId = null;
@@ -7691,8 +7704,21 @@ function horizonClear() {
   horizonResultEl.textContent = 'Click a point on the map';
   renderHorizonHistoryList();
 }
+function horizonClearHistory() {
+  horizonHistory.forEach(h => horizonHistoryLayerGroup.removeLayer(h.dotMarker));
+  horizonHistory = [];
+  horizonHistoryIdCounter = 1;
+  renderHorizonHistoryList();
+  saveHorizonHistory();
+}
 map.on('click', (e) => { if (toolMode === 'horizon') horizonCalcAt(e.latlng); });
-document.getElementById('btnHorizonClear').addEventListener('click', horizonClear);
+document.getElementById('btnHorizonClear').addEventListener('click', () => {
+  if (!horizonPoint && !horizonHistory.length) return; // nothing to clear
+  showConfirmModal('Clear the current line of sight and all saved horizon calculations? This can\'t be undone.', () => {
+    horizonClear();
+    horizonClearHistory();
+  }, 'Clear');
+});
 
 /* ---------------- Route & Elevation planning (car/foot, multi-vertex) ----------------
    Click as many points as you like to build a route through them, in order
