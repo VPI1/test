@@ -671,7 +671,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v4.7</span>
+      <span class="version-tag">v4.8</span>
     </div>
   </div>
 </div>
@@ -4113,13 +4113,12 @@ function multiAxisGradientIntensity(lat, lng, axes) {
 // the user placed the endpoint, not just a strip starting AT that endpoint,
 // which would leave a dead unfilled band in between.
 function computeAxisExtension(axes) {
-  // Extends by default — extendBeyond is only ever explicitly SET to false by
-  // the checkbox's own "off" click, so treating an unset/undefined axis
-  // (never touched, or loaded from older saved data) as "extend" as well
-  // means the boundary is a soft guideline out of the box, with no per-axis
-  // opt-in click required — only an explicit opt-OUT for the rare axis that
-  // actually wants a hard edge.
-  const extending = (axes || []).filter(a => a.extendBeyond !== false);
+  // Off by default — extendBeyond only takes effect once explicitly SET to
+  // true by the checkbox's own "on" click, so an unset/undefined axis
+  // (never touched, or loaded from older saved data) stays a hard edge at
+  // the zone's own drawn boundary. Opt IN per axis for the rarer case that
+  // actually wants the gradient bleeding past it.
+  const extending = (axes || []).filter(a => a.extendBeyond === true);
   if (!extending.length) return null;
   const HALF_WIDTH_M = 250; // how wide the buffer strip is, either side of the axis path
   const CAP_EXTRA_M = 300;  // a little past the very last point, for a rounded cap rather than a flat cut
@@ -4648,8 +4647,8 @@ function openPolygonEditPopup(layer, record, latlng) {
             <button class="axis-reverse" style="flex:1;padding:3px 4px;border-radius:5px;border:1px solid #343d52;background:transparent;color:inherit;cursor:pointer;font-size:10.5px;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h11l-3-3"/><path d="M17 17H6l3 3"/></svg> Reverse</button>
             <button class="axis-reposition" style="flex:1;padding:3px 4px;border-radius:5px;border:1px solid #ffd166;background:transparent;color:#ffd166;cursor:pointer;font-size:10.5px;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg> Reposition</button>
           </div>
-          <label style="display:flex;align-items:center;gap:5px;font-size:10.5px;color:var(--sub);cursor:pointer;" title="On by default — lets this axis's gradient keep going a little past the zone's own drawn boundary, in the direction it points, instead of stopping dead at the edge. Uncheck to give this specific axis a hard edge instead.">
-            <input type="checkbox" class="axis-extend" ${axis.extendBeyond !== false ? 'checked' : ''} style="accent-color:var(--accent);width:13px;height:13px;">
+          <label style="display:flex;align-items:center;gap:5px;font-size:10.5px;color:var(--sub);cursor:pointer;" title="Off by default — the gradient stops dead at the zone's own drawn boundary. Check to let this specific axis keep going a little past it instead, in the direction it points.">
+            <input type="checkbox" class="axis-extend" ${axis.extendBeyond === true ? 'checked' : ''} style="accent-color:var(--accent);width:13px;height:13px;">
             Extend past zone boundary
           </label>
         </div>
