@@ -687,7 +687,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v5.7</span>
+      <span class="version-tag">v5.8</span>
     </div>
   </div>
 </div>
@@ -2619,8 +2619,41 @@ function applyCanvasBlur(layer) {
   }
 }
 
+// leaflet.heat's own redraw() (called by setLatLngs()/setOptions()) doesn't
+// draw immediately — it defers to the NEXT animation frame
+// (this._frame = requestAnimFrame(this._redraw, this)). If the layer gets
+// removed from the map before that frame fires — exactly what switching to
+// Polygons view, or hiding a layer, can do moments after a setLatLngs() call
+// scheduled one — the deferred callback still runs anyway and reads
+// this._map.getSize(), which throws once this._map has gone null on
+// removal. Every plain map.removeLayer(heatLayer) in this file goes through
+// here instead, so cancelling any pending frame happens at the exact moment
+// it'd otherwise go stale, closing the race rather than hoping it never lands.
+function removeHeatLayer(heatLayer) {
+  if (!heatLayer) return;
+  if (heatLayer._frame) {
+    L.Util.cancelAnimFrame(heatLayer._frame);
+    heatLayer._frame = null;
+  }
+  map.removeLayer(heatLayer);
+}
+// Belt-and-suspenders on top of removeHeatLayer's cancellation above:
+// cancelAnimationFrame timing isn't something this app can fully guarantee
+// across every browser/situation (a frame can still be in-flight the instant
+// it's cancelled, depending on the engine), so patch the actual crash site
+// directly rather than relying only on winning that race. Measured directly:
+// without this, "switch to Polygons view" followed shortly by "switch back,
+// then away again" could still throw from a stale frame reading
+// this._map.getSize() after this._map had gone null — unconditionally
+// bailing out here is the only version of this fix that's actually airtight.
+const _heatLayerRedraw = L.HeatLayer.prototype._redraw;
+L.HeatLayer.prototype._redraw = function() {
+  if (!this._map) return;
+  return _heatLayerRedraw.call(this);
+};
+
 function rebuildHeatLayer(layer) {
-  if (layer.heatLayer) { map.removeLayer(layer.heatLayer); }
+  if (layer.heatLayer) { removeHeatLayer(layer.heatLayer); }
   // Guard against the container measuring 0x0 (e.g. called too early, before layout
   // has settled) — leaflet.heat can't size a canvas to a zero area and throws.
   const size = map.getSize();
@@ -2951,8 +2984,22 @@ map.on('zoomend', () => {
 // intermediate drag tick. Doing a full regenerateLayerShapes here (rather than
 // re-deriving just the shapes that were capped) is simplest and cheap in this
 // position: it only runs once per pan gesture, not once per moveend tick.
+// Same currentViewMode/heatmapMasterVisible guard as performZoomRegeneration
+// (see its own comment) — nothing heat-related is on screen in Polygons view,
+// so none of this needs to run there. Missing this guard was a real,
+// measured source of lag while panning in Polygons view: revealPannedPolygonArea
+// and regenerateLayerShapes can mean re-sampling tens of thousands of points
+// AND re-encoding a baked shape's canvas to a PNG data URL (bakePolygon's
+// canvas.toDataURL(), not cheap) — for every layer, on every pan, entirely for
+// output nobody could see. Worse, that work is synchronous and blocks the main
+// thread, which can delay the browser from getting to the control-zone
+// canvas's OWN pending redraw (also requestAnimationFrame-scheduled) — read
+// together with a long-running blocking pan-reveal pass, that's exactly what
+// a "the polygon didn't move with the view, then snapped into place late"
+// symptom looks like, not a bug in the zone canvas's own positioning.
 let panFillSettleTimer = null;
 map.on('moveend', () => {
+  if (currentViewMode !== 'heatmap' || !heatmapMasterVisible) return;
   layers.forEach(layer => { revealPannedPolygonArea(layer); revealPannedStrokes(layer); });
   if (panFillSettleTimer) clearTimeout(panFillSettleTimer);
   panFillSettleTimer = setTimeout(() => {
@@ -3047,7 +3094,7 @@ function restoreSnapshot(snap) {
       heatLayer: null
     };
     refreshHeatLayer(layer);
-    if (!layer.visible) map.removeLayer(layer.heatLayer);
+    if (!layer.visible) removeHeatLayer(layer.heatLayer);
     layer.polygons = sl.polygons.map(sp => {
       const record = {
         id: sp.id, vertices: sp.vertices, fillFraction: sp.fillFraction, isGradient: !!sp.isGradient,
@@ -3153,7 +3200,7 @@ function deleteLayer(id) {
   const layer = getLayer(id);
   if (!layer) return;
   pushUndoSnapshot();
-  if (layer.heatLayer) map.removeLayer(layer.heatLayer);
+  if (layer.heatLayer) removeHeatLayer(layer.heatLayer);
   layer.polygons.forEach(rec => { if (rec.outline) map.removeLayer(rec.outline); if (rec._bakedOverlay) map.removeLayer(rec._bakedOverlay); });
   layers = layers.filter(l => l.id !== id);
   if (activeLayerId === id) activeLayerId = layers.length ? layers[layers.length-1].id : null;
@@ -3164,7 +3211,7 @@ function toggleLayerVisibility(id) {
   const layer = getLayer(id);
   layer.visible = !layer.visible;
   const heatShouldShow = layer.visible && heatmapMasterVisible && currentViewMode === 'heatmap';
-  if (heatShouldShow) { layer.heatLayer.addTo(map); applyCanvasBlur(layer); } else { map.removeLayer(layer.heatLayer); }
+  if (heatShouldShow) { layer.heatLayer.addTo(map); applyCanvasBlur(layer); } else { removeHeatLayer(layer.heatLayer); }
   layer.polygons.forEach(rec => {
     // Shape outlines (see createPolygonOutline) are an editing affordance,
     // not tied to heatmapMasterVisible — but still have no business being
@@ -6403,7 +6450,7 @@ function importNativeLayers(data) {
       return record;
     });
     refreshHeatLayer(layer);
-    if (!layer.visible) map.removeLayer(layer.heatLayer);
+    if (!layer.visible) removeHeatLayer(layer.heatLayer);
   });
 }
 
@@ -6846,7 +6893,7 @@ function applyHeatmapMasterVisibility() {
     if (layer.heatLayer) {
       const isShown = map.hasLayer(layer.heatLayer);
       if (shouldShow && !isShown) layer.heatLayer.addTo(map);
-      if (!shouldShow && isShown) map.removeLayer(layer.heatLayer);
+      if (!shouldShow && isShown) removeHeatLayer(layer.heatLayer);
     }
     // Baked polygon fills (see bakePolygon) render as their own independent
     // image overlays, not through layer.heatLayer — without this they'd stay
