@@ -271,6 +271,7 @@
   .info-modal-body ul:last-child{margin-bottom:0;}
   .info-modal-body li{margin-bottom:4px;}
   .info-modal-body li:last-child{margin-bottom:0;}
+  .info-modal-body .color-swatch{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:6px;vertical-align:-1px;flex-shrink:0;}
   .info-modal-links{display:flex;flex-wrap:wrap;gap:12px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);}
   .info-modal-links a{display:inline-flex;align-items:center;gap:5px;color:var(--sub);font-size:11.5px;text-decoration:none;transition:color .12s;}
   .info-modal-links a:hover{color:var(--accent);}
@@ -686,7 +687,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v5.5</span>
+      <span class="version-tag">v5.6</span>
     </div>
   </div>
 </div>
@@ -798,15 +799,15 @@
       <p><strong>Consolidation:</strong> establishment and manning of semi-permanent positions.</p>
       <p><strong>Significant position:</strong> a position that engages in firefights, or otherwise affects its surroundings or the enemy's plans — i.e., the enemy has to account for it.</p>
       <p><strong>Mixed/layered pie:</strong> an area where positions of both sides overlap, often in a chaotic pattern.</p>
-      <p><strong>Red zone:</strong> territory consolidated by Russia. Includes insignificant Ukrainian positions and inconsistent/infrequent Ukrainian infiltrations.</p>
-      <p><strong>Gray zone:</strong> any of the following:</p>
+      <p><span class="color-swatch" style="background:#ca0000;"></span><strong>Red zone:</strong> territory consolidated by Russia. Includes insignificant Ukrainian positions and inconsistent/infrequent Ukrainian infiltrations.</p>
+      <p><span class="color-swatch" style="background:#c3c3c3;"></span><strong>Gray zone:</strong> any of the following:</p>
       <ul>
         <li>frequent infiltrations by either side</li>
         <li>no man's land</li>
         <li>presence of one side without the ability to consolidate</li>
         <li>a mixed/layered pie area</li>
       </ul>
-      <p><strong>Uncolored (Ukraine):</strong> territory consolidated by Ukraine. Includes insignificant Russian positions and inconsistent/infrequent Russian infiltrations.</p>
+      <p><span class="color-swatch" style="background:transparent;border:1.5px solid var(--sub);"></span><strong>Uncolored (Ukraine):</strong> territory consolidated by Ukraine. Includes insignificant Russian positions and inconsistent/infrequent Russian infiltrations.</p>
       <p>A zone turns red or uncolored (Ukrainian) when:</p>
       <ul>
         <li>an enemy's frequent/consistent infiltrations stop being frequent/consistent</li>
