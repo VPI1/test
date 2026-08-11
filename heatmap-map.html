@@ -671,7 +671,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v4.8</span>
+      <span class="version-tag">v4.9</span>
     </div>
   </div>
 </div>
@@ -2723,6 +2723,15 @@ function scheduleGradientExposureCalibration(layer) {
 }
 
 function performZoomRegeneration() {
+  // Nothing heat-related is even on the map right now — either the master
+  // toggle is off, or Polygons view mode has detached every heatLayer (see
+  // applyHeatmapMasterVisibility). Regenerating against a heatLayer with no
+  // _map reference throws (setOptions/redraw both read it internally) — this
+  // was firing on every zoom while in Polygons view, since the per-layer
+  // `layer.visible` check below doesn't know about either of those. Mirroring
+  // applyHeatmapMasterVisibility's own condition here, rather than a narrower
+  // one, is what keeps the two from silently drifting apart again.
+  if (currentViewMode !== 'heatmap' || !heatmapMasterVisible) return;
   layers.forEach(layer => {
     // A hidden layer's heatLayer has been removed from the map (see
     // toggleLayerVisibility), so its internal _map reference is null — calling
