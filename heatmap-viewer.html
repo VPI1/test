@@ -553,7 +553,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v5.6</span>
+      <span class="version-tag">v5.7</span>
     </div>
   </div>
 </div>
@@ -2359,13 +2359,21 @@ function rebuildHeatLayer(layer) {
   layer.heatLayer = L.heatLayer(layer.points, zoomScaledOptions(layer));
   // heatmapMasterVisible (see the "Heatmap master toggle" block) overrides this
   // layer's own visible flag when the user has hidden ALL heat layers at once.
-  if (layer.visible && heatmapMasterVisible) layer.heatLayer.addTo(map);
+  // currentViewMode is the same idea for Polygons view: without it, rebuilding
+  // the heat layer while looking at the Polygons view would silently pop the
+  // heatmap back on top of the territory shading.
+  if (layer.visible && heatmapMasterVisible && currentViewMode === 'heatmap') layer.heatLayer.addTo(map);
   applyCanvasBlur(layer);
 }
 
 function refreshHeatLayer(layer) {
   if (!layer.heatLayer) { rebuildHeatLayer(layer); return; }
-  if (!layer.visible) return;
+  // A hidden layer's heatLayer, or one removed from the map by Polygons view
+  // mode (see applyHeatmapMasterVisibility), has its internal _map reference
+  // null — setOptions()/setLatLngs() both call redraw() internally, which
+  // reads this._map._animating unconditionally once the canvas has ever been
+  // initialized, throwing if it's not actually on the map right now.
+  if (!layer.visible || currentViewMode !== 'heatmap') return;
   layer.heatLayer.setOptions(zoomScaledOptions(layer));
   layer.heatLayer.setLatLngs(layer.points);
 }
@@ -2512,10 +2520,15 @@ function filterLayerPoints(layer, predicate) {
 function toggleLayerVisibility(id) {
   const layer = getLayer(id);
   layer.visible = !layer.visible;
-  if (layer.visible && heatmapMasterVisible) { layer.heatLayer.addTo(map); applyCanvasBlur(layer); } else { map.removeLayer(layer.heatLayer); }
+  const heatShouldShow = layer.visible && heatmapMasterVisible && currentViewMode === 'heatmap';
+  if (heatShouldShow) { layer.heatLayer.addTo(map); applyCanvasBlur(layer); } else { map.removeLayer(layer.heatLayer); }
   layer.polygons.forEach(rec => {
-    if (rec.outline) { if (layer.visible) rec.outline.addTo(map); else map.removeLayer(rec.outline); }
-    if (rec._bakedOverlay) { if (layer.visible) rec._bakedOverlay.addTo(map); else map.removeLayer(rec._bakedOverlay); }
+    // Shape outlines (see createPolygonOutline) are an editing affordance,
+    // not tied to heatmapMasterVisible — but still have no business being
+    // interactive on the map while viewing Polygons mode.
+    const outlineShouldShow = layer.visible && currentViewMode === 'heatmap';
+    if (rec.outline) { if (outlineShouldShow) rec.outline.addTo(map); else map.removeLayer(rec.outline); }
+    if (rec._bakedOverlay) { if (heatShouldShow) rec._bakedOverlay.addTo(map); else map.removeLayer(rec._bakedOverlay); }
   });
   if (layer.visible) regenerateLayerShapes(layer);
   renderLayerList();
@@ -2751,7 +2764,7 @@ function createPolygonOutline(layer, record) {
   });
   outline.on('mouseover', () => outline.setStyle({ opacity: 0.6, fillOpacity: 0.1 }));
   outline.on('mouseout', () => outline.setStyle({ opacity: 0, fillOpacity: 0 }));
-  if (layer.visible) outline.addTo(map);
+  if (layer.visible && currentViewMode === 'heatmap') outline.addTo(map);
   return outline;
 }
 
@@ -3038,7 +3051,11 @@ function bakePolygon(layer, rec, maxSamplesOverride) {
   const canvas = renderHeatCanvasFromPoints(layer, outPoints, nw, width, height, zoom);
   if (rec._bakedOverlay) map.removeLayer(rec._bakedOverlay);
   const overlay = L.imageOverlay(canvas.toDataURL(), fullBounds, { opacity: 1, interactive: false });
-  overlay.addTo(map);
+  // Attaching the overlay is exactly what applyHeatmapMasterVisibility already
+  // governs everywhere else — skipping that check here was the real source of
+  // the heatmap fill reappearing on top of the Polygons view whenever a shape
+  // got re-baked (e.g. on zoom) while looking at that view.
+  if (heatmapMasterVisible && currentViewMode === 'heatmap') overlay.addTo(map);
   const img = overlay.getElement();
   if (img) img.style.filter = `blur(${canvasBlurPxFor(layer)}px)`;
   rec._bakedOverlay = overlay;
@@ -3414,10 +3431,27 @@ function applyHeatmapMasterVisibility() {
     // Baked polygon fills (see bakePolygon) render as their own independent
     // image overlays, not through layer.heatLayer.
     layer.polygons.forEach(rec => {
-      if (!rec._bakedOverlay) return;
-      const isShown = map.hasLayer(rec._bakedOverlay);
-      if (shouldShow && !isShown) rec._bakedOverlay.addTo(map);
-      if (!shouldShow && isShown) map.removeLayer(rec._bakedOverlay);
+      if (rec._bakedOverlay) {
+        const isShown = map.hasLayer(rec._bakedOverlay);
+        if (shouldShow && !isShown) rec._bakedOverlay.addTo(map);
+        if (!shouldShow && isShown) map.removeLayer(rec._bakedOverlay);
+      }
+      // Shape-editing outlines (see createPolygonOutline) are invisible at
+      // rest and only exist to catch clicks/hover for editing a heatmap
+      // shape — but they stay fully INTERACTIVE the whole time they're on
+      // the map, which means Leaflet keeps doing real point-in-polygon hit
+      // testing against every one of them on every mousemove. Independent
+      // of heatmapMasterVisible (unlike the heat glow/fill above) since the
+      // "Map" checkbox is only about the heat rendering, not about whether
+      // shapes stay editable — but Polygons view mode has no use for either,
+      // and leaving them active there was both a stray hover-highlight over
+      // territory that has nothing to do with them, and pure wasted work.
+      if (rec.outline) {
+        const outlineShouldShow = layer.visible && currentViewMode === 'heatmap';
+        const isShown = map.hasLayer(rec.outline);
+        if (outlineShouldShow && !isShown) rec.outline.addTo(map);
+        if (!outlineShouldShow && isShown) map.removeLayer(rec.outline);
+      }
     });
   });
   if (heatmapLegendControl._container) {
@@ -3454,8 +3488,15 @@ function setControlZoneVisible(key, visible) {
       zone.group = L.geoJSON(geo, {
         pane: 'controlZonePane',
         renderer: controlZoneRenderer,
+        // interactive:false skips per-path hit-testing (see the same option on
+        // FORTIFICATIONS above) — these are purely visual fills, never clicked
+        // or hovered. smoothFactor higher than fortifications' 1.5: these are
+        // broad, thousands-of-vertices territory boundaries where fill color
+        // is what reads at a glance, not crisp edges the way a thin
+        // fortification line needs — same render-time-only simplification,
+        // no data loss, just tolerating more of it here.
         interactive: false,
-        style: { color: zone.outlineColor, weight: 1.5, opacity: 0.9, fillColor: zone.fillColor, fillOpacity: 0.45, smoothFactor: 1.5 }
+        style: { color: zone.outlineColor, weight: 1.5, opacity: 0.9, fillColor: zone.fillColor, fillOpacity: 0.45, smoothFactor: 2.5 }
       });
       zone.loading = false;
       if (zone.visible) zone.group.addTo(map);
