@@ -537,7 +537,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v4.8</span>
+      <span class="version-tag">v4.9</span>
     </div>
   </div>
 </div>
@@ -2292,6 +2292,89 @@ function refreshHeatLayer(layer) {
   layer.heatLayer.setLatLngs(layer.points);
 }
 
+/* ---------------- Exposure calibration ----------------
+   Ported from the editor's own copy — a layer's exported maxIntensity was
+   calibrated for whatever zoom the editor happened to be at when published,
+   which has no reason to match this viewer's own starting zoom (or wherever
+   a visitor pans/zooms to). Without recalibrating here too, the exact same
+   points render at a DIFFERENT, uncorrected brightness than the editor ever
+   showed — confirmed directly: at a 5-level zoom offset from a layer's
+   referenceZoom, the editor's own calibration held peak alpha at the
+   intended ~250, while rendering the identical data uncalibrated here
+   measured only ~94 at one zoom and fully clipped/oversaturated at others,
+   both reading as "doesn't match the editor." See the matching block in
+   heatmap-map.html for the full reasoning; kept functionally identical here
+   on purpose. */
+function measurePeakAlphaAtMax(layer, max, rect) {
+  layer.heatLayer.options.max = max;
+  layer.heatLayer._heat.max(max);
+  layer.heatLayer._redraw();
+  try {
+    const canvas = layer.heatLayer._canvas;
+    const ctx = canvas.getContext('2d');
+    const data = ctx.getImageData(rect.x, rect.y, rect.w, rect.h).data;
+    let peak = 0;
+    for (let i = 3; i < data.length; i += 4) { if (data[i] > peak) peak = data[i]; }
+    return peak;
+  } catch (e) {
+    return -1;
+  }
+}
+
+function layerScreenRect(layer) {
+  const canvas = layer.heatLayer._canvas;
+  const pad = effectiveBlobSizePx(layer) + 2;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  layer.points.forEach(p => {
+    const pt = map.latLngToContainerPoint([p[0], p[1]]);
+    if (pt.x < minX) minX = pt.x; if (pt.x > maxX) maxX = pt.x;
+    if (pt.y < minY) minY = pt.y; if (pt.y > maxY) maxY = pt.y;
+  });
+  const x = Math.max(0, Math.floor(minX - pad));
+  const y = Math.max(0, Math.floor(minY - pad));
+  const x2 = Math.min(canvas.width, Math.ceil(maxX + pad));
+  const y2 = Math.min(canvas.height, Math.ceil(maxY + pad));
+  return { x, y, w: Math.max(1, x2 - x), h: Math.max(1, y2 - y) };
+}
+
+function calibrateGradientExposure(layer) {
+  if (!layer || !layer.visible || !layer.heatLayer || !layer.points.length) return;
+  const rect = layerScreenRect(layer);
+  const TARGET_ALPHA = 250;
+  let lo = 0.02, hi = 20;
+  for (let guard = 0; guard < 4 && measurePeakAlphaAtMax(layer, hi, rect) > TARGET_ALPHA; guard++) hi *= 5;
+  for (let guard = 0; guard < 6 && measurePeakAlphaAtMax(layer, lo, rect) < TARGET_ALPHA; guard++) lo /= 5;
+  let converged = true;
+  for (let i = 0; i < 13; i++) {
+    const mid = (lo + hi) / 2;
+    const peak = measurePeakAlphaAtMax(layer, mid, rect);
+    if (peak < 0) { converged = false; break; }
+    if (peak > TARGET_ALPHA) lo = mid; else hi = mid;
+  }
+  if (converged) layer.maxIntensity = hi;
+  refreshHeatLayer(layer);
+}
+
+let zoomExposureTimer = null;
+function scheduleZoomExposureRecalibration() {
+  if (zoomExposureTimer) clearTimeout(zoomExposureTimer);
+  zoomExposureTimer = setTimeout(() => {
+    zoomExposureTimer = null;
+    // Re-sync to the current zoom immediately before measuring — see the
+    // matching comment in heatmap-map.html for why this guards against a
+    // stale timer racing a newer zoom step.
+    layers.forEach(regenerateLayerShapes);
+    let i = 0;
+    function calibrateNext() {
+      if (i >= layers.length) return;
+      const layer = layers[i++];
+      calibrateGradientExposure(layer);
+      setTimeout(calibrateNext, 0);
+    }
+    calibrateNext();
+  }, 150);
+}
+
 function performZoomRegeneration() {
   layers.forEach(layer => {
     if (!layer.visible) return;
@@ -2299,6 +2382,7 @@ function performZoomRegeneration() {
     applyCanvasBlur(layer);
     regenerateLayerShapes(layer);
   });
+  scheduleZoomExposureRecalibration();
 }
 
 // See the matching comment in heatmap-map.html — a CSS transform animating on top
@@ -3002,6 +3086,13 @@ function loadHeatmapData(data) {
     // this just makes sure that happens once immediately on load too, instead of
     // showing nothing until the visitor's first zoom or pan.
     regenerateLayerShapes(layer);
+    // Straight to calibrateGradientExposure (not the debounced scheduler) and
+    // unconditional, same as the editor's own importNativeLayers — an
+    // exported layer's maxIntensity was calibrated for the editor's zoom at
+    // publish time, not this viewer's starting one, so without this it's
+    // just as likely to render under- or over-saturated relative to how the
+    // editor actually showed it.
+    calibrateGradientExposure(layer);
     if (!layer.visible) map.removeLayer(layer.heatLayer);
   });
   renderLayerList();
