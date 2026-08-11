@@ -7491,17 +7491,20 @@ const horizonHistoryListEl = document.getElementById('horizonHistoryList');
 const btnHorizonCoarse = document.getElementById('btnHorizonCoarse');
 const btnHorizonPrecise = document.getElementById('btnHorizonPrecise');
 
-// Past calculations, kept in memory for the rest of the session so
-// revisiting one (after switching tools, or just clicking a new point and
-// wanting the old one back) doesn't mean redoing a scan that can take over
-// a minute in Precise mode. Each entry carries everything drawHorizonResult
-// needs to redraw it — nothing gets recomputed on revisit, only redrawn.
-// Capped rather than unbounded so a long session doesn't quietly pile up
-// hundreds of small always-on map markers.
+// Past calculations, kept for revisiting (after switching tools, or just
+// clicking a new point and wanting the old one back) without redoing a scan
+// that can take over a minute in Precise mode. Each entry carries everything
+// drawHorizonResult needs to redraw it — nothing gets recomputed on revisit,
+// only redrawn. Persisted to localStorage (see saveHorizonHistory /
+// loadHorizonHistoryFromStorage) so it also survives closing the tab, not
+// just switching tools within one session. Capped rather than unbounded so
+// a long-lived history doesn't quietly pile up hundreds of small always-on
+// map markers or bloat localStorage.
 let horizonHistory = [];
 let horizonHistoryIdCounter = 1;
 let horizonActiveHistoryId = null;
 const HORIZON_HISTORY_MAX = 20;
+const HORIZON_HISTORY_STORAGE_KEY = 'heatmapHorizonHistory_v1';
 // Not added to the map by default — see setToolMode, which adds/removes
 // this alongside entering/leaving the Horizon tool, so the little "you
 // calculated here before" dots (and their click-to-revisit) only clutter
@@ -7622,7 +7625,45 @@ function addHorizonHistoryEntry(entry) {
     horizonHistoryLayerGroup.removeLayer(removed.dotMarker);
   }
   renderHorizonHistoryList();
+  saveHorizonHistory();
 }
+// Strips the Leaflet dotMarker (not serializable, and rebuilt on load
+// anyway) and the L.LatLng point/frontier objects down to plain {lat,lng},
+// which both JSON.stringify and L.latLng() accept.
+function saveHorizonHistory() {
+  try {
+    const plain = horizonHistory.map(h => ({
+      id: h.id, precise: h.precise, groundElev: h.groundElev,
+      minDist: h.minDist, maxDist: h.maxDist, avgDist: h.avgDist,
+      point: { lat: h.point.lat, lng: h.point.lng },
+      frontier: h.frontier.map(p => ({ lat: p.lat, lng: p.lng }))
+    }));
+    localStorage.setItem(HORIZON_HISTORY_STORAGE_KEY, JSON.stringify(plain));
+  } catch (e) {} // storage full/unavailable — history just won't survive a reload this time
+}
+function loadHorizonHistoryFromStorage() {
+  let stored;
+  try { stored = JSON.parse(localStorage.getItem(HORIZON_HISTORY_STORAGE_KEY) || '[]'); }
+  catch (e) { return; } // corrupt data — start empty rather than throw
+  if (!Array.isArray(stored) || !stored.length) return;
+  let maxId = 0;
+  horizonHistory = stored.slice(0, HORIZON_HISTORY_MAX).map(h => {
+    maxId = Math.max(maxId, h.id || 0);
+    const entry = {
+      id: h.id, precise: !!h.precise, groundElev: h.groundElev,
+      minDist: h.minDist, maxDist: h.maxDist, avgDist: h.avgDist,
+      point: L.latLng(h.point.lat, h.point.lng),
+      frontier: h.frontier.map(p => L.latLng(p.lat, p.lng))
+    };
+    entry.dotMarker = L.circleMarker(entry.point, { radius: 4, color: '#ff9e4a', weight: 1.5, fillOpacity: 0.6, fillColor: '#ff9e4a' })
+      .addTo(horizonHistoryLayerGroup)
+      .on('click', (e) => { L.DomEvent.stopPropagation(e); showHorizonHistoryEntry(entry.id); });
+    return entry;
+  });
+  horizonHistoryIdCounter = maxId + 1;
+  renderHorizonHistoryList();
+}
+loadHorizonHistoryFromStorage();
 function showHorizonHistoryEntry(id) {
   const entry = horizonHistory.find(h => h.id === id);
   if (!entry) return;
