@@ -356,9 +356,12 @@
   #horizonPanel{
     position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:1200;display:none;
     background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 4px 14px #0007;
-    padding:9px 12px;font-size:12.5px;gap:10px;align-items:center;flex-wrap:wrap;
+    padding:9px 12px;font-size:12.5px;flex-direction:column;gap:7px;
+    width:min(340px,calc(100vw - 28px));
   }
   .panel-header-row{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+  .horizon-progress-track{width:100%;height:4px;background:var(--border);border-radius:2px;overflow:hidden;display:none;}
+  .horizon-progress-fill{height:100%;width:0%;background:var(--accent);transition:width .12s linear;}
   .panel-stat b{color:var(--good);}
   .panel-height-input{
     width:52px;background:#00000030;border:1px solid var(--border);color:var(--text);
@@ -537,7 +540,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v5.0</span>
+      <span class="version-tag">v5.1</span>
     </div>
   </div>
 </div>
@@ -611,9 +614,15 @@
 </div>
 
 <div id="horizonPanel">
-  <span>Observer height <input id="horizonHeight" class="panel-height-input" type="number" value="1.8" min="0" step="0.1"> m</span>
+  <div class="panel-header-row">
+    <div class="route-mode-row" title="Coarse samples fewer/lower-resolution elevation points — quick (a couple seconds), plenty for a general sense of what's visible. Precise samples finer terrain detail — much slower, for when small terrain features could matter.">
+      <button id="btnHorizonCoarse" class="small active-toggle">Coarse</button>
+      <button id="btnHorizonPrecise" class="small">Precise</button>
+    </div>
+    <button id="btnHorizonClear" class="small"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg> Clear</button>
+  </div>
   <span class="panel-stat" id="horizonResult">Click a point on the map</span>
-  <button id="btnHorizonClear" class="small"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg> Clear</button>
+  <div class="horizon-progress-track" id="horizonProgressTrack"><div class="horizon-progress-fill" id="horizonProgressFill"></div></div>
 </div>
 
 <div id="routePanel">
@@ -3968,27 +3977,34 @@ function wireElevationChartHover(wrapEl, samples, widthPx, heightPx) {
    "Apparent elevation angle" itself has to account for Earth's curvature —
    without it, distant terrain would read as impossibly tall. Points are
    compared via curvature-adjusted angle = (elevation - drop - eyeLevel) /
-   distance, where drop = distance² / (2 * effective Earth radius). Using
-   the SAME 4/3-Earth-radius refraction convention as the old plain formula
-   below (not the true radius) keeps this consistent with it — solving that
-   drop formula for distance when it exactly cancels a given height
-   reproduces 4.12*sqrt(h) almost exactly, confirming the two approaches
-   agree in the (also seen: no terrain in the way) case they should. */
+   distance, where drop = distance² / (2 * effective Earth radius), using
+   the standard 4/3-Earth-radius refraction convention throughout — i.e.
+   always assuming clear, ordinary atmospheric conditions (no fog/haze
+   modeling, no unusually strong/weak refraction from temperature
+   inversions) rather than trying to model weather. Observer height is a
+   fixed 1.8m (an average adult's eye height) added straight to the
+   clicked point's own ground elevation — not user-adjustable, since the
+   tool is about what's visible standing there, not antenna placement. */
 const EARTH_RADIUS_EFFECTIVE_M = 6371000 * 4 / 3;
+const HORIZON_EYE_HEIGHT_M = 1.8;
 const HORIZON_NUM_BEARINGS = 60;
 const HORIZON_SAMPLES_PER_RAY = 32;
 const HORIZON_MAX_RANGE_CAP_M = 80000; // safety cap — an observer on a very tall point could otherwise ask for a huge, slow-to-sample area
 // A full scan is up to 1920 sample points spread over a potentially 80km-wide
-// area — at the other tools' zoom-14 lookup (each tile covering only ~2-3km),
-// that meant hundreds of DISTINCT tile fetches and measured 30-45+ seconds,
-// most of it just waiting on network round-trips past the browser's per-origin
-// connection limit. Each zoom step down covers 2x the linear distance per
-// tile, so zoom 11 covers 8x more per tile (~64x fewer tiles for the same
-// area) — coarser resolution (~150-300m/px depending on latitude) than the
-// other tools use, but this scan is about whether a hill-sized landform
-// blocks the view over kilometers, not resolving individual buildings, so
-// the trade is the right one here specifically.
-const HORIZON_ELEV_ZOOM = 11;
+// area. At the other tools' zoom-14 elevation lookup (each tile covering
+// only ~2-3km), that meant hundreds of DISTINCT tile fetches and measured
+// 30-45+ seconds, most of it just waiting on network round-trips past the
+// browser's per-origin connection limit. Each zoom step down covers 2x the
+// linear distance per tile, so zoom 11 covers 8x more per tile (~64x fewer
+// tiles for the same area) — coarser resolution (~150-300m/px depending on
+// latitude) than zoom 14, but fast (a couple seconds). Exposed as a
+// Coarse/Precise choice rather than picking one permanently: Coarse (this
+// zoom 11, default) is plenty for "is there a hill roughly here," Precise
+// (zoom 14, the original approach) resolves finer terrain detail at real
+// cost — tens of seconds to over a minute — for when that detail matters.
+const HORIZON_ZOOM_COARSE = 11;
+const HORIZON_ZOOM_PRECISE = 14;
+let horizonPrecise = false; // Coarse by default
 
 // Great-circle destination point, distM out from latlng along bearingDeg —
 // needed to place each ray's sample points; Leaflet has no built-in for this.
@@ -4005,24 +4021,36 @@ function destinationPoint(latlng, bearingDeg, distM) {
 let horizonMarker = null, horizonShape = null, horizonPoint = null;
 let horizonRequestId = 0;
 const horizonResultEl = document.getElementById('horizonResult');
-const horizonHeightInput = document.getElementById('horizonHeight');
+const horizonProgressTrack = document.getElementById('horizonProgressTrack');
+const horizonProgressFill = document.getElementById('horizonProgressFill');
+const btnHorizonCoarse = document.getElementById('btnHorizonCoarse');
+const btnHorizonPrecise = document.getElementById('btnHorizonPrecise');
+
+function horizonSetPrecision(precise) {
+  horizonPrecise = precise;
+  btnHorizonCoarse.classList.toggle('active-toggle', !precise);
+  btnHorizonPrecise.classList.toggle('active-toggle', precise);
+  if (horizonPoint) computeAndDrawHorizon();
+}
+btnHorizonCoarse.addEventListener('click', () => horizonSetPrecision(false));
+btnHorizonPrecise.addEventListener('click', () => horizonSetPrecision(true));
 
 async function horizonCalcAt(latlng) {
   horizonPoint = latlng;
   await computeAndDrawHorizon();
 }
-// Re-run on every height-input change too, not just a fresh click — refetching
-// sounds wasteful, but fetchElevationAt's own tile cache means everything
-// within the previous range comes back instantly, so this only actually costs
-// network time for the NEWLY-extended area when height (and so range) grows.
 async function computeAndDrawHorizon() {
   if (!horizonPoint) return;
   const requestId = ++horizonRequestId;
-  horizonResultEl.textContent = 'Calculating line-of-sight horizon…';
+  const zoom = horizonPrecise ? HORIZON_ZOOM_PRECISE : HORIZON_ZOOM_COARSE;
+  horizonResultEl.textContent = horizonPrecise
+    ? 'Calculating precise line of sight — this can take a while…'
+    : 'Calculating line of sight…';
+  horizonProgressTrack.style.display = 'block';
+  horizonProgressFill.style.width = '0%';
   const groundElev = await fetchElevationAt(horizonPoint);
   if (requestId !== horizonRequestId) return;
-  const observerH = parseFloat(horizonHeightInput.value) || 0;
-  const eyeAbs = Math.max((groundElev || 0) + observerH, 0);
+  const eyeAbs = Math.max((groundElev || 0) + HORIZON_EYE_HEIGHT_M, 0);
   const maxRangeM = Math.min(HORIZON_MAX_RANGE_CAP_M, Math.max(500, 4120 * Math.sqrt(eyeAbs)));
   // Quadratic spacing — denser sampling close to the observer (where a small
   // obstacle matters most) and progressively sparser farther out (where
@@ -4037,7 +4065,24 @@ async function computeAndDrawHorizon() {
     const bearing = (360 / HORIZON_NUM_BEARINGS) * b;
     rays.push({ bearing, latlngs: rayDists.map(d => destinationPoint(horizonPoint, bearing, d)) });
   }
-  const allElevs = await Promise.all(rays.flatMap(r => r.latlngs).map(p => fetchElevationAt(p, HORIZON_ELEV_ZOOM)));
+  // Progress feedback: each sample point's own fetch resolves independently
+  // (Promise.all just waits for the LAST one), so ticking a shared counter
+  // up as each one finishes and redrawing the bar gives a live sense of how
+  // much is left — the one part of "how long will this take" that's
+  // actually knowable up front (total sample count), even though the
+  // per-sample time (cached vs. a real network fetch) isn't.
+  const allPoints = rays.flatMap(r => r.latlngs);
+  let completed = 0, lastShownPct = -1;
+  const allElevs = await Promise.all(allPoints.map(p => fetchElevationAt(p, zoom).then(v => {
+    completed++;
+    const pct = Math.floor((completed / allPoints.length) * 100);
+    if (pct !== lastShownPct && requestId === horizonRequestId) {
+      lastShownPct = pct;
+      horizonProgressFill.style.width = pct + '%';
+      horizonResultEl.textContent = (horizonPrecise ? 'Calculating precise line of sight… ' : 'Calculating line of sight… ') + pct + '%';
+    }
+    return v;
+  })));
   if (requestId !== horizonRequestId) return;
   let idx = 0;
   const frontier = [];
@@ -4067,16 +4112,17 @@ async function computeAndDrawHorizon() {
   if (horizonShape) map.removeLayer(horizonShape);
   horizonMarker = L.circleMarker(horizonPoint, { radius: 5, color: '#ff9e4a', weight: 2, fillOpacity: 1, fillColor: '#12151a' }).addTo(map);
   horizonShape = L.polygon(frontier, { color: '#ff9e4a', weight: 2, fillOpacity: 0.05, dashArray: '5 5' }).addTo(map);
+  horizonProgressTrack.style.display = 'none';
   const elevText = groundElev === null ? 'unknown ground' : Math.round(groundElev) + 'm ground';
   const avgDist = visibleRays ? sumDist / visibleRays : 0;
-  horizonResultEl.innerHTML = `Line of sight <b style="color:var(--good);">${formatDistance(minDist === Infinity ? 0 : minDist)}–${formatDistance(maxDist)}</b>, ${formatDistance(avgDist)} avg (${elevText} + ${observerH}m)`;
+  horizonResultEl.innerHTML = `Line of sight <b style="color:var(--good);">${formatDistance(minDist === Infinity ? 0 : minDist)}–${formatDistance(maxDist)}</b>, ${formatDistance(avgDist)} avg (${elevText}, ${HORIZON_EYE_HEIGHT_M}m eye)`;
 }
-horizonHeightInput.addEventListener('input', () => { if (horizonPoint) computeAndDrawHorizon(); });
 function horizonClear() {
   horizonPoint = null;
   horizonRequestId++; // invalidates any in-flight calculation
   if (horizonMarker) { map.removeLayer(horizonMarker); horizonMarker = null; }
   if (horizonShape) { map.removeLayer(horizonShape); horizonShape = null; }
+  horizonProgressTrack.style.display = 'none';
   horizonResultEl.textContent = 'Click a point on the map';
 }
 map.on('click', (e) => { if (toolMode === 'horizon') horizonCalcAt(e.latlng); });
