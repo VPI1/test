@@ -600,6 +600,10 @@
         <label for="chkHeatmapMaster"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2.5px;margin-right:7px;"><polygon points="1 6 8 3 16 6 23 3 23 18 16 21 8 18 1 21 1 6"/><line x1="8" y1="3" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="21"/></svg>Map</label>
       </div>
       <div class="overlay-row">
+        <input type="checkbox" id="chkRoads">
+        <label for="chkRoads" title="Roads, railways and place labels on top of whichever basemap is active — Google's own reference layer, same one Hybrid mode already bakes in."><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2.5px;margin-right:3px;"><path d="M4 19L10 5l4 8 3-5 3 11"/><circle cx="10" cy="5" r="1.4" fill="currentColor" stroke="none"/><circle cx="17" cy="8" r="1.4" fill="currentColor" stroke="none"/></svg>Roads &amp; railways</label>
+      </div>
+      <div class="overlay-row">
         <input type="checkbox" id="chkFortMaster">
         <label for="chkFortMaster"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2.5px;margin-right:3px;"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/></svg>All fortifications</label>
       </div>
@@ -687,7 +691,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v5.9</span>
+      <span class="version-tag">v6.0</span>
     </div>
   </div>
 </div>
@@ -1071,7 +1075,7 @@ const basemaps = {
   })
 };
 const basemapLabels = { google:'Google Satellite', ghybrid:'Google Hybrid', osm:'OpenStreetMap', esri:'Esri Imagery', esriDarkGray:'Esri Dark Gray', esriTopo:'Esri Topographic' };
-let currentBasemapKey = 'google';
+let currentBasemapKey = 'ghybrid';
 basemaps[currentBasemapKey].addTo(map);
 
 const BasemapControl = L.Control.extend({
@@ -1108,6 +1112,22 @@ const BasemapControl = L.Control.extend({
   }
 });
 map.addControl(new BasemapControl());
+
+// Google's own "roads/labels only, transparent background" tile layer —
+// lyrs=h is the exact reference layer Google's own Hybrid mode (lyrs=y)
+// bakes together with satellite imagery, exposed here on its own so it can
+// sit on top of ANY basemap, not just Hybrid (useful over plain Satellite/
+// Esri/topo views too, where there'd otherwise be no roads at all). Plain
+// tileLayer with no pane specified — it shares the basemap's own tilePane,
+// so it naturally stacks above the basemap tiles (added after) and below
+// every custom-pane overlay (heatmap, control zones, fortifications), all
+// of which use higher panes.
+const roadsOverlay = L.tileLayer('https://{s}.google.com/vt/lyrs=h&x={x}&y={y}&z={z}', {
+  subdomains: ['mt0','mt1','mt2','mt3'], maxZoom: 20, attribution: 'Google Roads', ...FAST_TILE_OPTS
+});
+document.getElementById('chkRoads').addEventListener('change', (e) => {
+  if (e.target.checked) roadsOverlay.addTo(map); else map.removeLayer(roadsOverlay);
+});
 
 /* ---------------- User preferences (persisted) ----------------
    One JSON blob in localStorage for small standing choices (view mode, device
@@ -2043,12 +2063,26 @@ const FIRMS_AGE_STOPS = [
   { maxHours: 48, color: '#ffeb3b', label: '24–48 hr' },
   { maxHours: Infinity, color: '#9e9e9e', label: '48 hr+' }
 ];
-function firmsAgeColor(acqDate, acqTime) {
+function firmsHoursAgo(acqDate, acqTime) {
   const hhmm = String(acqTime ?? '').padStart(4, '0');
   const acquired = new Date(`${acqDate}T${hhmm.slice(0, 2)}:${hhmm.slice(2, 4)}:00Z`);
-  const hoursAgo = (Date.now() - acquired.getTime()) / 3600000;
+  return (Date.now() - acquired.getTime()) / 3600000;
+}
+function firmsAgeColor(acqDate, acqTime) {
+  const hoursAgo = firmsHoursAgo(acqDate, acqTime);
   const stop = FIRMS_AGE_STOPS.find(s => hoursAgo < s.maxHours);
   return (stop || FIRMS_AGE_STOPS[FIRMS_AGE_STOPS.length - 1]).color;
+}
+// A raw UTC timestamp needs mental math to place in time — this reads the
+// same detection back as "3 hours ago"/"2 days ago" for the tooltip, so how
+// recent a fire is is legible at a glance instead of only through the dot's
+// color (which the legend already explains, but isn't precise).
+function firmsRelativeAgeLabel(acqDate, acqTime) {
+  const hoursAgo = firmsHoursAgo(acqDate, acqTime);
+  if (hoursAgo < 1) return 'under an hour ago';
+  if (hoursAgo < 24) { const h = Math.round(hoursAgo); return `${h} hour${h === 1 ? '' : 's'} ago`; }
+  const d = Math.round(hoursAgo / 24);
+  return `${d} day${d === 1 ? '' : 's'} ago`;
 }
 
 const LegendControl = L.Control.extend({
@@ -2448,7 +2482,7 @@ async function toggleFirmsOverlay(enabled) {
     const frp = parseFloat(r.frp) || 0;
     L.circleMarker([lat, lng], {
       renderer: firmsRenderer, radius: 4, color, weight: 1, fillColor: color, fillOpacity: 0.7
-    }).bindTooltip(`<strong>${r.acq_date} ${time} UTC</strong><br>${r.satellite || ''} | FRP ${frp} MW | conf ${r.confidence}`)
+    }).bindTooltip(`<strong>${firmsRelativeAgeLabel(r.acq_date, r.acq_time)}</strong> <span style="opacity:.7;">(${r.acq_date} ${time} UTC)</span><br>${r.satellite || ''} | FRP ${frp} MW | conf ${r.confidence}`)
       .addTo(firmsOverlay);
     plotted++;
   });
@@ -2733,19 +2767,21 @@ function refreshHeatLayer(layer) {
    of the current view, like a map tile, pans and zooms via the browser's own
    cheap CSS transform instead of being recomputed at all.
 
-   So whenever nothing is actively changing, this bakes exactly that: a
-   snapshot of the current (padded) viewport rendered at up to zoom 14 detail
-   — capped lower only if that would need an unreasonably large canvas at a
-   very zoomed-out view — and swaps it in over the live canvas. The instant
-   real-time accuracy is needed again (layer.points just changed — see
-   refreshHeatLayer above), it swaps back to the live canvas immediately, then
-   re-bakes and swaps back once things settle. Reuses renderHeatCanvasFromPoints
-   (below), the same per-pixel renderer bakePolygon already uses for baked
-   shapes, so a raster looks pixel-identical to the live canvas it replaces. */
-const HEATMAP_RASTER_ZOOM = 14;
-const HEATMAP_RASTER_MAX_DIM = 1600;
+   First version of this re-derived the raster from scratch via
+   renderHeatCanvasFromPoints — correct, but still paid the full per-point
+   simpleheat render every bake, which for a heavily-painted layer was
+   itself slow enough to be its own visible stutter right at the swap. This
+   version instead just SNAPSHOTS layer.heatLayer's own already-rendered
+   canvas — the exact pixels already on screen — into an image. No per-point
+   work at all, so a bake is now a plain bitmap copy, not a re-render: this
+   is what actually gets it close to "feels like the Polygons view," where
+   nothing is ever recomputed on pan/zoom either.
+
+   canvas.toBlob() (not the synchronous toDataURL()) is used so the PNG
+   encode doesn't block the main thread while it runs — panning/zooming
+   during the brief encode is still responsive. */
 const HEATMAP_RASTER_PADDING = 0.2;
-const HEATMAP_RASTER_SETTLE_MS = 450;
+const HEATMAP_RASTER_SETTLE_MS = 200;
 
 function scheduleHeatRasterBake(layer) {
   clearTimeout(layer._rasterBakeTimer);
@@ -2776,43 +2812,69 @@ function hideHeatRendering(layer) {
   layer._rasterBakeTimer = null;
   if (layer.heatLayer && map.hasLayer(layer.heatLayer)) removeHeatLayer(layer.heatLayer);
   if (layer._rasterOverlay && map.hasLayer(layer._rasterOverlay)) { map.removeLayer(layer._rasterOverlay); layer._rasterOverlay = null; }
-}
-
-// Degrades the bake zoom below HEATMAP_RASTER_ZOOM only when the padded
-// viewport at 14 would need a canvas bigger than HEATMAP_RASTER_MAX_DIM —
-// i.e. only when zoomed out far enough that the visible area is huge in
-// real-world terms. At or above the normal working zoom range this always
-// bakes at the full requested detail.
-function bakeHeatRasterCanvas(layer) {
-  const viewBounds = map.getBounds().pad(HEATMAP_RASTER_PADDING);
-  let zoom = HEATMAP_RASTER_ZOOM, nw, se, width, height;
-  do {
-    nw = map.project(viewBounds.getNorthWest(), zoom);
-    se = map.project(viewBounds.getSouthEast(), zoom);
-    width = Math.ceil(se.x - nw.x);
-    height = Math.ceil(se.y - nw.y);
-    if (width <= HEATMAP_RASTER_MAX_DIM && height <= HEATMAP_RASTER_MAX_DIM) break;
-    zoom--;
-  } while (zoom > 1);
-  if (width <= 0 || height <= 0) return null;
-  return { canvas: renderHeatCanvasFromPoints(layer, layer.points, nw, width, height, zoom), bounds: viewBounds };
+  if (layer._rasterOverlayUrl) { URL.revokeObjectURL(layer._rasterOverlayUrl); layer._rasterOverlayUrl = null; }
 }
 
 function bakeAndShowHeatRaster(layer) {
   layer._rasterBakeTimer = null;
   if (!layer.visible || !heatmapMasterVisible || currentViewMode !== 'heatmap') return;
+  if (!layer.heatLayer || !layer.heatLayer._canvas) return; // no live canvas yet to snapshot
   if (!layer.points.length) return; // nothing to render — leave the (empty) live canvas showing
-  const baked = bakeHeatRasterCanvas(layer);
-  if (!baked) return;
-  if (layer._rasterOverlay) map.removeLayer(layer._rasterOverlay);
-  layer._rasterOverlay = L.imageOverlay(baked.canvas.toDataURL(), baked.bounds, { opacity: 1, interactive: false });
-  layer._rasterOverlay.addTo(map);
-  // Same softening safety net the shared heat canvas and baked shapes both
-  // get (see applyCanvasBlur) — without it, swapping to the raster would be
-  // visibly crisper than the live canvas it just replaced.
-  const img = layer._rasterOverlay.getElement();
-  if (img) img.style.filter = `blur(${canvasBlurPxFor(layer)}px)`;
-  if (layer.heatLayer && map.hasLayer(layer.heatLayer)) removeHeatLayer(layer.heatLayer);
+  const liveCanvas = layer.heatLayer._canvas;
+  const mapSize = map.getSize();
+  // leaflet-heat sizes its canvas to exactly the current viewport
+  // (map.getSize()) — if that doesn't match right now, either a resize or a
+  // pending redraw is mid-flight; skip this cycle rather than snapshot a
+  // mismatched frame, the next settle will catch it.
+  if (liveCanvas.width !== mapSize.x || liveCanvas.height !== mapSize.y) return;
+
+  // Padding beyond the live canvas's exact viewport so a small pan still
+  // lands inside the cached image instead of needing an immediate re-bake —
+  // the border itself is simply blank (transparent, basemap shows through),
+  // same trade-off a padded bake always made, just cheap to add now since
+  // it's one drawImage call instead of re-deriving the padding's own content.
+  const padX = Math.round(mapSize.x * HEATMAP_RASTER_PADDING);
+  const padY = Math.round(mapSize.y * HEATMAP_RASTER_PADDING);
+  const canvas = document.createElement('canvas');
+  canvas.width = mapSize.x + padX * 2;
+  canvas.height = mapSize.y + padY * 2;
+  canvas.getContext('2d').drawImage(liveCanvas, padX, padY);
+  const bounds = L.latLngBounds(
+    map.containerPointToLatLng([-padX, -padY]),
+    map.containerPointToLatLng([mapSize.x + padX, mapSize.y + padY])
+  );
+
+  layer._rasterBakeRequestId = (layer._rasterBakeRequestId || 0) + 1;
+  const requestId = layer._rasterBakeRequestId;
+  // WebP over the default PNG: measured directly on this exact canvas —
+  // ~6x faster to encode (160ms vs 1030ms for a realistic 10k-point layer's
+  // viewport) and ~5x smaller, while still keeping the transparency the
+  // basemap needs to show through. Per spec, toBlob silently falls back to
+  // PNG on its own if a browser doesn't support encoding WebP, so this
+  // never needs its own fallback path.
+  canvas.toBlob(blob => {
+    // The view may well have moved on (or this layer been hidden/deleted)
+    // during the async encode — a stale blob landing after a newer bake (or
+    // after hideHeatRendering already ran) would silently un-hide the
+    // raster or leak an unused object URL. Only the most recent request for
+    // this layer is allowed to actually apply its result.
+    if (!blob || layer._rasterBakeRequestId !== requestId) return;
+    if (!layer.visible || !heatmapMasterVisible || currentViewMode !== 'heatmap') return;
+    if (layer._rasterOverlay) map.removeLayer(layer._rasterOverlay);
+    if (layer._rasterOverlayUrl) URL.revokeObjectURL(layer._rasterOverlayUrl);
+    const url = URL.createObjectURL(blob);
+    layer._rasterOverlayUrl = url;
+    layer._rasterOverlay = L.imageOverlay(url, bounds, { opacity: 1, interactive: false });
+    layer._rasterOverlay.addTo(map);
+    // drawImage() above copied the live canvas's raw pixel buffer, which
+    // does NOT include its CSS filter (see applyCanvasBlur) — that's a
+    // compositing-time effect, never part of the canvas's own bitmap — so
+    // without re-applying it here the raster would snap to visibly crisper
+    // than the live canvas it just replaced.
+    const img = layer._rasterOverlay.getElement();
+    if (img) img.style.filter = `blur(${canvasBlurPxFor(layer)}px)`;
+    if (layer.heatLayer && map.hasLayer(layer.heatLayer)) removeHeatLayer(layer.heatLayer);
+  }, 'image/webp', 0.85);
 }
 
 /* ---------------- Exposure calibration ----------------
@@ -5689,10 +5751,10 @@ function regenerateStroke(layer, strokeRecord) {
 function renderHeatCanvasFromPoints(layer, points, originPt, width, height, zoom) {
   // Scaled relative to the zoom this canvas is actually being projected at
   // (the zoom param above), not necessarily the live map's current zoom —
-  // bakePolygon always calls this with zoom === map.getZoom(), so this was a
-  // no-op difference there, but the heat-raster bake (see bakeHeatRasterCanvas)
-  // can legitimately target a different zoom than what's currently on screen,
-  // and blob size needs to match the zoom it's actually being drawn at.
+  // bakePolygon always calls this with zoom === map.getZoom(), so this is a
+  // no-op difference in practice — kept as a parameter rather than hardcoded
+  // to map.getZoom() so any future caller baking at a non-live zoom gets
+  // correct blob sizing for free.
   const opts = zoomScaledOptions(layer, zoom);
   const r = opts.radius + opts.blur;
   const g = r / 2;
