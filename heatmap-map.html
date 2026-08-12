@@ -687,7 +687,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v5.8</span>
+      <span class="version-tag">v5.9</span>
     </div>
   </div>
 </div>
@@ -2533,7 +2533,7 @@ function makeLayer(name) {
 
 const MIN_SCALED_RADIUS = 8, MAX_SCALED_RADIUS = 40;
 
-function zoomScaledOptions(layer) {
+function zoomScaledOptions(layer, zoomOverride) {
   // Measured directly against the actual canvas the browser produces (not just our
   // own numbers): making blur MUCH bigger than radius does not create a soft, bright
   // gradient — canvas shadowBlur convolves the shape's alpha, so a blur far larger
@@ -2545,7 +2545,7 @@ function zoomScaledOptions(layer) {
   // and fills are regenerated fresh at the right density on every zoom change (see
   // regenerateLayerShapes) — so radius/blur just need to look like a decent soft blob
   // at a sane, moderate size, not carry the zoom-reach burden themselves.
-  const factor = Math.pow(2, map.getZoom() - layer.referenceZoom);
+  const factor = Math.pow(2, (zoomOverride !== undefined ? zoomOverride : map.getZoom()) - layer.referenceZoom);
   const scaledRadius = layer.radius * factor;
   const scaledBlur = layer.blur * factor;
   const radius = Math.min(MAX_SCALED_RADIUS, Math.max(MIN_SCALED_RADIUS, scaledRadius));
@@ -2651,6 +2651,17 @@ L.HeatLayer.prototype._redraw = function() {
   if (!this._map) return;
   return _heatLayerRedraw.call(this);
 };
+// redraw() (the public method setOptions()/setLatLngs() call internally) has
+// its own, separate crash: it reads this._map._animating synchronously,
+// before ever scheduling a frame — so calling setOptions()/setLatLngs() on a
+// heatLayer that's momentarily detached (e.g. a view-mode switch racing with
+// a just-settled zoom/pan regeneration) throws immediately, not just via a
+// stale deferred callback. Same fix, same reasoning, one level up.
+const _heatLayerRedrawPublic = L.HeatLayer.prototype.redraw;
+L.HeatLayer.prototype.redraw = function() {
+  if (!this._map) return this;
+  return _heatLayerRedrawPublic.call(this);
+};
 
 function rebuildHeatLayer(layer) {
   if (layer.heatLayer) { removeHeatLayer(layer.heatLayer); }
@@ -2666,7 +2677,10 @@ function rebuildHeatLayer(layer) {
   // for Polygons view: without it, a paint stroke (which rebuilds the heat layer)
   // made while looking at the Polygons view would silently pop the heatmap back
   // on top of the territory shading.
-  if (layer.visible && heatmapMasterVisible && currentViewMode === 'heatmap') layer.heatLayer.addTo(map);
+  if (layer.visible && heatmapMasterVisible && currentViewMode === 'heatmap') {
+    layer.heatLayer.addTo(map);
+    scheduleHeatRasterBake(layer);
+  }
   applyCanvasBlur(layer);
 }
 
@@ -2696,8 +2710,109 @@ function refreshHeatLayer(layer) {
   // mode removes every heatLayer from the map the same way (see
   // applyHeatmapMasterVisibility) — same crash, same fix.
   if (!layer.visible || currentViewMode !== 'heatmap') return;
+  // Whatever's about to be shown here might currently be the fast static
+  // raster (see the heat-raster block below) rather than the live canvas —
+  // and the raster is a frozen snapshot that won't reflect this update at
+  // all. Force the live canvas back on screen before applying it, then
+  // re-arm the settle timer that eventually re-bakes a fresh raster once
+  // things go quiet again — a fast flurry of calls during an active stroke
+  // just keeps deferring that re-bake instead of thrashing it on every tick.
+  showLiveHeatLayer(layer);
   layer.heatLayer.setOptions(zoomScaledOptions(layer));
   layer.heatLayer.setLatLngs(layer.points);
+  scheduleHeatRasterBake(layer);
+}
+
+/* ---------------- Heatmap raster (fast pan/zoom substitute) ----------------
+   layer.heatLayer is a live canvas that leaflet-heat fully re-derives from
+   layer.points on every zoom/pan settle (see performZoomRegeneration /
+   revealPannedPolygonArea) — cost scales with point count, which for a
+   heavily-painted layer can be tens of thousands of points, and was a real,
+   measured source of lag. None of that per-point recomputation is actually
+   needed to just LOOK at the map while not editing it: a plain raster image
+   of the current view, like a map tile, pans and zooms via the browser's own
+   cheap CSS transform instead of being recomputed at all.
+
+   So whenever nothing is actively changing, this bakes exactly that: a
+   snapshot of the current (padded) viewport rendered at up to zoom 14 detail
+   — capped lower only if that would need an unreasonably large canvas at a
+   very zoomed-out view — and swaps it in over the live canvas. The instant
+   real-time accuracy is needed again (layer.points just changed — see
+   refreshHeatLayer above), it swaps back to the live canvas immediately, then
+   re-bakes and swaps back once things settle. Reuses renderHeatCanvasFromPoints
+   (below), the same per-pixel renderer bakePolygon already uses for baked
+   shapes, so a raster looks pixel-identical to the live canvas it replaces. */
+const HEATMAP_RASTER_ZOOM = 14;
+const HEATMAP_RASTER_MAX_DIM = 1600;
+const HEATMAP_RASTER_PADDING = 0.2;
+const HEATMAP_RASTER_SETTLE_MS = 450;
+
+function scheduleHeatRasterBake(layer) {
+  clearTimeout(layer._rasterBakeTimer);
+  layer._rasterBakeTimer = setTimeout(() => bakeAndShowHeatRaster(layer), HEATMAP_RASTER_SETTLE_MS);
+}
+
+function showLiveHeatLayer(layer) {
+  if (layer._rasterOverlay && map.hasLayer(layer._rasterOverlay)) map.removeLayer(layer._rasterOverlay);
+  if (layer.heatLayer && !map.hasLayer(layer.heatLayer)) { layer.heatLayer.addTo(map); applyCanvasBlur(layer); }
+}
+
+// Shows whichever of raster/live is already correctly on screen, or — if
+// neither is — shows the live layer and schedules a raster bake. Used by the
+// "this layer should now be visible" branches (master toggle on, Heatmap
+// view selected, a layer's own eye icon turned back on): none of those
+// changed the DATA, so there's no need to force-interrupt an already-correct
+// raster the way refreshHeatLayer's data-changed path does.
+function showHeatRendering(layer) {
+  const rasterShown = layer._rasterOverlay && map.hasLayer(layer._rasterOverlay);
+  const liveShown = layer.heatLayer && map.hasLayer(layer.heatLayer);
+  if (rasterShown || liveShown) return;
+  showLiveHeatLayer(layer);
+  scheduleHeatRasterBake(layer);
+}
+
+function hideHeatRendering(layer) {
+  clearTimeout(layer._rasterBakeTimer);
+  layer._rasterBakeTimer = null;
+  if (layer.heatLayer && map.hasLayer(layer.heatLayer)) removeHeatLayer(layer.heatLayer);
+  if (layer._rasterOverlay && map.hasLayer(layer._rasterOverlay)) { map.removeLayer(layer._rasterOverlay); layer._rasterOverlay = null; }
+}
+
+// Degrades the bake zoom below HEATMAP_RASTER_ZOOM only when the padded
+// viewport at 14 would need a canvas bigger than HEATMAP_RASTER_MAX_DIM —
+// i.e. only when zoomed out far enough that the visible area is huge in
+// real-world terms. At or above the normal working zoom range this always
+// bakes at the full requested detail.
+function bakeHeatRasterCanvas(layer) {
+  const viewBounds = map.getBounds().pad(HEATMAP_RASTER_PADDING);
+  let zoom = HEATMAP_RASTER_ZOOM, nw, se, width, height;
+  do {
+    nw = map.project(viewBounds.getNorthWest(), zoom);
+    se = map.project(viewBounds.getSouthEast(), zoom);
+    width = Math.ceil(se.x - nw.x);
+    height = Math.ceil(se.y - nw.y);
+    if (width <= HEATMAP_RASTER_MAX_DIM && height <= HEATMAP_RASTER_MAX_DIM) break;
+    zoom--;
+  } while (zoom > 1);
+  if (width <= 0 || height <= 0) return null;
+  return { canvas: renderHeatCanvasFromPoints(layer, layer.points, nw, width, height, zoom), bounds: viewBounds };
+}
+
+function bakeAndShowHeatRaster(layer) {
+  layer._rasterBakeTimer = null;
+  if (!layer.visible || !heatmapMasterVisible || currentViewMode !== 'heatmap') return;
+  if (!layer.points.length) return; // nothing to render — leave the (empty) live canvas showing
+  const baked = bakeHeatRasterCanvas(layer);
+  if (!baked) return;
+  if (layer._rasterOverlay) map.removeLayer(layer._rasterOverlay);
+  layer._rasterOverlay = L.imageOverlay(baked.canvas.toDataURL(), baked.bounds, { opacity: 1, interactive: false });
+  layer._rasterOverlay.addTo(map);
+  // Same softening safety net the shared heat canvas and baked shapes both
+  // get (see applyCanvasBlur) — without it, swapping to the raster would be
+  // visibly crisper than the live canvas it just replaced.
+  const img = layer._rasterOverlay.getElement();
+  if (img) img.style.filter = `blur(${canvasBlurPxFor(layer)}px)`;
+  if (layer.heatLayer && map.hasLayer(layer.heatLayer)) removeHeatLayer(layer.heatLayer);
 }
 
 /* ---------------- Exposure calibration ----------------
@@ -2997,6 +3112,18 @@ map.on('zoomend', () => {
 // together with a long-running blocking pan-reveal pass, that's exactly what
 // a "the polygon didn't move with the view, then snapped into place late"
 // symptom looks like, not a bug in the zone canvas's own positioning.
+// True while the layer's cached raster (see the heat-raster block above)
+// already covers the current view — meaning panning around inside it is
+// exactly like panning across a tile: nothing needs to be recomputed at all.
+// Only used to skip the SETTLE-triggered regenerateLayerShapes pass below,
+// which is the genuinely expensive part (see its own "80k+ points" comment)
+// — revealPannedPolygonArea/revealPannedStrokes already have their own cheap
+// early-return for "nothing new to reveal" and keep running regardless, so
+// layer.points stays in sync for whenever the live canvas needs it again.
+function rasterCoversView(layer) {
+  return !!(layer._rasterOverlay && map.hasLayer(layer._rasterOverlay) && layer._rasterOverlay.getBounds().contains(map.getBounds()));
+}
+
 let panFillSettleTimer = null;
 map.on('moveend', () => {
   if (currentViewMode !== 'heatmap' || !heatmapMasterVisible) return;
@@ -3004,7 +3131,7 @@ map.on('moveend', () => {
   if (panFillSettleTimer) clearTimeout(panFillSettleTimer);
   panFillSettleTimer = setTimeout(() => {
     panFillSettleTimer = null;
-    layers.forEach(regenerateLayerShapes);
+    layers.forEach(layer => { if (!rasterCoversView(layer)) regenerateLayerShapes(layer); });
   }, PAN_FILL_SETTLE_MS);
 });
 
@@ -3079,7 +3206,7 @@ function pushUndoSnapshot() {
 
 function restoreSnapshot(snap) {
   layers.forEach(l => {
-    if (l.heatLayer) map.removeLayer(l.heatLayer);
+    hideHeatRendering(l);
     l.polygons.forEach(p => { if (p.outline) map.removeLayer(p.outline); if (p._bakedOverlay) map.removeLayer(p._bakedOverlay); });
   });
   layers = snap.layers.map(sl => {
@@ -3200,7 +3327,7 @@ function deleteLayer(id) {
   const layer = getLayer(id);
   if (!layer) return;
   pushUndoSnapshot();
-  if (layer.heatLayer) removeHeatLayer(layer.heatLayer);
+  hideHeatRendering(layer);
   layer.polygons.forEach(rec => { if (rec.outline) map.removeLayer(rec.outline); if (rec._bakedOverlay) map.removeLayer(rec._bakedOverlay); });
   layers = layers.filter(l => l.id !== id);
   if (activeLayerId === id) activeLayerId = layers.length ? layers[layers.length-1].id : null;
@@ -3211,7 +3338,7 @@ function toggleLayerVisibility(id) {
   const layer = getLayer(id);
   layer.visible = !layer.visible;
   const heatShouldShow = layer.visible && heatmapMasterVisible && currentViewMode === 'heatmap';
-  if (heatShouldShow) { layer.heatLayer.addTo(map); applyCanvasBlur(layer); } else { removeHeatLayer(layer.heatLayer); }
+  if (heatShouldShow) showHeatRendering(layer); else hideHeatRendering(layer);
   layer.polygons.forEach(rec => {
     // Shape outlines (see createPolygonOutline) are an editing affordance,
     // not tied to heatmapMasterVisible — but still have no business being
@@ -5560,7 +5687,13 @@ function regenerateStroke(layer, strokeRecord) {
 // leaflet-heat.js) for the stamp+colorize pass itself, guaranteeing pixel
 // parity with how every non-baked shape already renders.
 function renderHeatCanvasFromPoints(layer, points, originPt, width, height, zoom) {
-  const opts = zoomScaledOptions(layer);
+  // Scaled relative to the zoom this canvas is actually being projected at
+  // (the zoom param above), not necessarily the live map's current zoom —
+  // bakePolygon always calls this with zoom === map.getZoom(), so this was a
+  // no-op difference there, but the heat-raster bake (see bakeHeatRasterCanvas)
+  // can legitimately target a different zoom than what's currently on screen,
+  // and blob size needs to match the zoom it's actually being drawn at.
+  const opts = zoomScaledOptions(layer, zoom);
   const r = opts.radius + opts.blur;
   const g = r / 2;
   const maxOpt = opts.max === undefined ? 1 : opts.max;
@@ -6459,7 +6592,10 @@ document.getElementById('fileImport').addEventListener('change', async (e) => {
   const files = Array.from(e.target.files || []);
   if (!files.length) return;
   pushUndoSnapshot();
-  layers.forEach(l => { if (l.heatLayer) map.removeLayer(l.heatLayer); });
+  layers.forEach(l => {
+    hideHeatRendering(l);
+    l.polygons.forEach(p => { if (p.outline) map.removeLayer(p.outline); if (p._bakedOverlay) map.removeLayer(p._bakedOverlay); });
+  });
   layers = [];
   const failures = [];
   for (const file of files) {
@@ -6773,7 +6909,7 @@ function importGeoJSON(geo) {
     // Exposure toggle, same reasoning as painted strokes: an imported shape's raw
     // intensity values are otherwise just as likely to render near-invisible.
     calibrateGradientExposure(l);
-    if (!l.visible) map.removeLayer(l.heatLayer);
+    if (!l.visible) hideHeatRendering(l);
   });
   renderLayerList();
 }
@@ -6847,7 +6983,7 @@ function setFortificationVisible(key, visible) {
         // loss: the underlying geometry is untouched, so quality at any given
         // zoom looks the same as it would at 1.0, just computed faster.
         interactive: false,
-        style: { color: fort.color, weight: 2, opacity: 0.85, smoothFactor: 1.5 },
+        style: { color: fort.color, weight: 1.5, opacity: 0.85, smoothFactor: 1.5 },
         pointToLayer: (feature, latlng) => L.circleMarker(latlng, {
           pane: fort.pane, renderer: fort.renderer, interactive: false,
           radius: 3, color: fort.color, weight: 1, fillOpacity: 0.9
@@ -6890,11 +7026,7 @@ let heatmapMasterVisible = true;
 function applyHeatmapMasterVisibility() {
   layers.forEach(layer => {
     const shouldShow = layer.visible && heatmapMasterVisible && currentViewMode === 'heatmap';
-    if (layer.heatLayer) {
-      const isShown = map.hasLayer(layer.heatLayer);
-      if (shouldShow && !isShown) layer.heatLayer.addTo(map);
-      if (!shouldShow && isShown) removeHeatLayer(layer.heatLayer);
-    }
+    if (shouldShow) showHeatRendering(layer); else hideHeatRendering(layer);
     // Baked polygon fills (see bakePolygon) render as their own independent
     // image overlays, not through layer.heatLayer — without this they'd stay
     // visible even with the heatmap master switched off.
@@ -6944,11 +7076,23 @@ map.createPane('controlZonePane');
 map.getPane('controlZonePane').style.zIndex = 420;
 const controlZoneRenderer = L.canvas({ pane: 'controlZonePane' });
 
+// Both zones share one canvas (controlZoneRenderer), so what's visually "on
+// top" at their shared border is purely a matter of DRAW ORDER (last added
+// wins), not the zIndex fields above — those only matter across different
+// panes. Re-asserted after every addTo below (from whichever load/toggle
+// path just ran) rather than relying on russia/grayzone's fetches always
+// resolving in a particular order, since network timing for two independent
+// requests isn't something this can control.
+function raiseRussiaAboveGrayzone() {
+  const russia = CONTROL_ZONES.russia;
+  if (russia.group && map.hasLayer(russia.group)) russia.group.eachLayer(l => l.bringToFront && l.bringToFront());
+}
+
 function setControlZoneVisible(key, visible) {
   const zone = CONTROL_ZONES[key];
   zone.visible = visible;
   if (!visible) { if (zone.group) map.removeLayer(zone.group); return; }
-  if (zone.group) { zone.group.addTo(map); return; }
+  if (zone.group) { zone.group.addTo(map); raiseRussiaAboveGrayzone(); return; }
   if (zone.loading) return;
   zone.loading = true;
   fetch(zone.file)
@@ -6968,7 +7112,7 @@ function setControlZoneVisible(key, visible) {
         style: { color: zone.outlineColor, weight: 1.5, opacity: 0.9, fillColor: zone.fillColor, fillOpacity: 0.45, smoothFactor: 2.5 }
       });
       zone.loading = false;
-      if (zone.visible) zone.group.addTo(map);
+      if (zone.visible) { zone.group.addTo(map); raiseRussiaAboveGrayzone(); }
     })
     .catch(err => {
       zone.loading = false;
@@ -7001,7 +7145,7 @@ function applyViewMode(mode, skipSave) {
 }
 btnViewHeatmap.addEventListener('click', () => applyViewMode('heatmap'));
 btnViewPolygons.addEventListener('click', () => applyViewMode('polygons'));
-applyViewMode(getPref('viewMode', 'heatmap'), true);
+applyViewMode(getPref('viewMode', 'polygons'), true);
 
 /* ---------------- Right-click coordinates + share link ---------------- */
 const COPY_ICON_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>';
