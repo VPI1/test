@@ -553,7 +553,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v5.8</span>
+      <span class="version-tag">v5.9</span>
     </div>
   </div>
 </div>
@@ -2321,8 +2321,8 @@ function makeLayer(name) {
 
 const MIN_SCALED_RADIUS = 8, MAX_SCALED_RADIUS = 40;
 
-function zoomScaledOptions(layer) {
-  const factor = Math.pow(2, map.getZoom() - layer.referenceZoom);
+function zoomScaledOptions(layer, zoomOverride) {
+  const factor = Math.pow(2, (zoomOverride !== undefined ? zoomOverride : map.getZoom()) - layer.referenceZoom);
   const scaledRadius = layer.radius * factor;
   const scaledBlur = layer.blur * factor;
   const radius = Math.min(MAX_SCALED_RADIUS, Math.max(MIN_SCALED_RADIUS, scaledRadius));
@@ -2384,6 +2384,17 @@ L.HeatLayer.prototype._redraw = function() {
   if (!this._map) return;
   return _heatLayerRedraw.call(this);
 };
+// redraw() (the public method setOptions()/setLatLngs() call internally) has
+// its own, separate crash: it reads this._map._animating synchronously,
+// before ever scheduling a frame — so calling setOptions()/setLatLngs() on a
+// heatLayer that's momentarily detached (e.g. a view-mode switch racing with
+// a just-settled zoom/pan regeneration) throws immediately, not just via a
+// stale deferred callback. Same fix, same reasoning, one level up.
+const _heatLayerRedrawPublic = L.HeatLayer.prototype.redraw;
+L.HeatLayer.prototype.redraw = function() {
+  if (!this._map) return this;
+  return _heatLayerRedrawPublic.call(this);
+};
 
 function rebuildHeatLayer(layer) {
   if (layer.heatLayer) { removeHeatLayer(layer.heatLayer); }
@@ -2395,7 +2406,10 @@ function rebuildHeatLayer(layer) {
   // currentViewMode is the same idea for Polygons view: without it, rebuilding
   // the heat layer while looking at the Polygons view would silently pop the
   // heatmap back on top of the territory shading.
-  if (layer.visible && heatmapMasterVisible && currentViewMode === 'heatmap') layer.heatLayer.addTo(map);
+  if (layer.visible && heatmapMasterVisible && currentViewMode === 'heatmap') {
+    layer.heatLayer.addTo(map);
+    scheduleHeatRasterBake(layer);
+  }
   applyCanvasBlur(layer);
 }
 
@@ -2407,8 +2421,84 @@ function refreshHeatLayer(layer) {
   // reads this._map._animating unconditionally once the canvas has ever been
   // initialized, throwing if it's not actually on the map right now.
   if (!layer.visible || currentViewMode !== 'heatmap') return;
+  // Whatever's about to be shown here might currently be the fast static
+  // raster (see the heat-raster block below) rather than the live canvas —
+  // and the raster is a frozen snapshot that won't reflect this update at
+  // all. Force the live canvas back on screen before applying it, then
+  // re-arm the settle timer that eventually re-bakes a fresh raster once
+  // things go quiet again.
+  showLiveHeatLayer(layer);
   layer.heatLayer.setOptions(zoomScaledOptions(layer));
   layer.heatLayer.setLatLngs(layer.points);
+  scheduleHeatRasterBake(layer);
+}
+
+/* ---------------- Heatmap raster (fast pan/zoom substitute) ----------------
+   See the matching comment in heatmap-map.html — layer.heatLayer is a live
+   canvas that leaflet-heat fully re-derives from layer.points on every
+   zoom/pan settle, cost scaling with point count. Whenever nothing is
+   actively changing, this instead bakes a plain raster image of the current
+   (padded) viewport at up to zoom 14 detail and swaps it in — panning/zooming
+   across it is then just a cheap CSS transform, like any map tile, instead of
+   a live recompute. Reuses renderHeatCanvasFromPoints, the same per-pixel
+   renderer bakePolygon already uses for baked shapes. */
+const HEATMAP_RASTER_ZOOM = 14;
+const HEATMAP_RASTER_MAX_DIM = 1600;
+const HEATMAP_RASTER_PADDING = 0.2;
+const HEATMAP_RASTER_SETTLE_MS = 450;
+
+function scheduleHeatRasterBake(layer) {
+  clearTimeout(layer._rasterBakeTimer);
+  layer._rasterBakeTimer = setTimeout(() => bakeAndShowHeatRaster(layer), HEATMAP_RASTER_SETTLE_MS);
+}
+
+function showLiveHeatLayer(layer) {
+  if (layer._rasterOverlay && map.hasLayer(layer._rasterOverlay)) map.removeLayer(layer._rasterOverlay);
+  if (layer.heatLayer && !map.hasLayer(layer.heatLayer)) { layer.heatLayer.addTo(map); applyCanvasBlur(layer); }
+}
+
+function showHeatRendering(layer) {
+  const rasterShown = layer._rasterOverlay && map.hasLayer(layer._rasterOverlay);
+  const liveShown = layer.heatLayer && map.hasLayer(layer.heatLayer);
+  if (rasterShown || liveShown) return;
+  showLiveHeatLayer(layer);
+  scheduleHeatRasterBake(layer);
+}
+
+function hideHeatRendering(layer) {
+  clearTimeout(layer._rasterBakeTimer);
+  layer._rasterBakeTimer = null;
+  if (layer.heatLayer && map.hasLayer(layer.heatLayer)) removeHeatLayer(layer.heatLayer);
+  if (layer._rasterOverlay && map.hasLayer(layer._rasterOverlay)) { map.removeLayer(layer._rasterOverlay); layer._rasterOverlay = null; }
+}
+
+function bakeHeatRasterCanvas(layer) {
+  const viewBounds = map.getBounds().pad(HEATMAP_RASTER_PADDING);
+  let zoom = HEATMAP_RASTER_ZOOM, nw, se, width, height;
+  do {
+    nw = map.project(viewBounds.getNorthWest(), zoom);
+    se = map.project(viewBounds.getSouthEast(), zoom);
+    width = Math.ceil(se.x - nw.x);
+    height = Math.ceil(se.y - nw.y);
+    if (width <= HEATMAP_RASTER_MAX_DIM && height <= HEATMAP_RASTER_MAX_DIM) break;
+    zoom--;
+  } while (zoom > 1);
+  if (width <= 0 || height <= 0) return null;
+  return { canvas: renderHeatCanvasFromPoints(layer, layer.points, nw, width, height, zoom), bounds: viewBounds };
+}
+
+function bakeAndShowHeatRaster(layer) {
+  layer._rasterBakeTimer = null;
+  if (!layer.visible || !heatmapMasterVisible || currentViewMode !== 'heatmap') return;
+  if (!layer.points.length) return;
+  const baked = bakeHeatRasterCanvas(layer);
+  if (!baked) return;
+  if (layer._rasterOverlay) map.removeLayer(layer._rasterOverlay);
+  layer._rasterOverlay = L.imageOverlay(baked.canvas.toDataURL(), baked.bounds, { opacity: 1, interactive: false });
+  layer._rasterOverlay.addTo(map);
+  const img = layer._rasterOverlay.getElement();
+  if (img) img.style.filter = `blur(${canvasBlurPxFor(layer)}px)`;
+  if (layer.heatLayer && map.hasLayer(layer.heatLayer)) removeHeatLayer(layer.heatLayer);
 }
 
 /* ---------------- Exposure calibration ----------------
@@ -2567,7 +2657,7 @@ function toggleLayerVisibility(id) {
   const layer = getLayer(id);
   layer.visible = !layer.visible;
   const heatShouldShow = layer.visible && heatmapMasterVisible && currentViewMode === 'heatmap';
-  if (heatShouldShow) { layer.heatLayer.addTo(map); applyCanvasBlur(layer); } else { removeHeatLayer(layer.heatLayer); }
+  if (heatShouldShow) showHeatRendering(layer); else hideHeatRendering(layer);
   layer.polygons.forEach(rec => {
     // Shape outlines (see createPolygonOutline) are an editing affordance,
     // not tied to heatmapMasterVisible — but still have no business being
@@ -3020,7 +3110,11 @@ function appendStrokePoints(layer, strokeRecord) {
 // look through the shared layer. See heatmap-map.html's own copy of this
 // (kept in sync) for the full rationale.
 function renderHeatCanvasFromPoints(layer, points, originPt, width, height, zoom) {
-  const opts = zoomScaledOptions(layer);
+  // Scaled relative to the zoom this canvas is actually being projected at
+  // (the zoom param above), not necessarily the live map's current zoom — see
+  // the heat-raster bake, which can legitimately target a different zoom than
+  // what's currently on screen.
+  const opts = zoomScaledOptions(layer, zoom);
   const r = opts.radius + opts.blur;
   const g = r / 2;
   const maxOpt = opts.max === undefined ? 1 : opts.max;
@@ -3185,7 +3279,7 @@ function revealPannedStrokes(layer) {
 
 /* ---------------- Loading published data ---------------- */
 function loadHeatmapData(data) {
-  layers.forEach(l => { if (l.heatLayer) map.removeLayer(l.heatLayer); l.polygons.forEach(p => { if (p.outline) map.removeLayer(p.outline); if (p._bakedOverlay) map.removeLayer(p._bakedOverlay); }); });
+  layers.forEach(l => { hideHeatRendering(l); l.polygons.forEach(p => { if (p.outline) map.removeLayer(p.outline); if (p._bakedOverlay) map.removeLayer(p._bakedOverlay); }); });
   layers = [];
   (data.layers || []).forEach(ld => {
     const layer = makeLayer(ld.name);
@@ -3234,7 +3328,7 @@ function loadHeatmapData(data) {
     // just as likely to render under- or over-saturated relative to how the
     // editor actually showed it.
     calibrateGradientExposure(layer);
-    if (!layer.visible) removeHeatLayer(layer.heatLayer);
+    if (!layer.visible) hideHeatRendering(layer);
   });
   renderLayerList();
 }
@@ -3432,7 +3526,7 @@ function setFortificationVisible(key, visible) {
         pane: fort.pane,
         renderer: fort.renderer,
         interactive: false,
-        style: { color: fort.color, weight: 2, opacity: 0.85, smoothFactor: 1.5 },
+        style: { color: fort.color, weight: 1.5, opacity: 0.85, smoothFactor: 1.5 },
         pointToLayer: (feature, latlng) => L.circleMarker(latlng, {
           pane: fort.pane, renderer: fort.renderer, interactive: false,
           radius: 3, color: fort.color, weight: 1, fillOpacity: 0.9
@@ -3469,11 +3563,7 @@ let heatmapMasterVisible = true;
 function applyHeatmapMasterVisibility() {
   layers.forEach(layer => {
     const shouldShow = layer.visible && heatmapMasterVisible && currentViewMode === 'heatmap';
-    if (layer.heatLayer) {
-      const isShown = map.hasLayer(layer.heatLayer);
-      if (shouldShow && !isShown) layer.heatLayer.addTo(map);
-      if (!shouldShow && isShown) removeHeatLayer(layer.heatLayer);
-    }
+    if (shouldShow) showHeatRendering(layer); else hideHeatRendering(layer);
     // Baked polygon fills (see bakePolygon) render as their own independent
     // image overlays, not through layer.heatLayer.
     layer.polygons.forEach(rec => {
@@ -3521,11 +3611,19 @@ map.createPane('controlZonePane');
 map.getPane('controlZonePane').style.zIndex = 420;
 const controlZoneRenderer = L.canvas({ pane: 'controlZonePane' });
 
+// See heatmap-map.html's own copy for the full rationale — both zones share
+// one canvas, so what's on top at their shared border is draw order, not the
+// zIndex fields above.
+function raiseRussiaAboveGrayzone() {
+  const russia = CONTROL_ZONES.russia;
+  if (russia.group && map.hasLayer(russia.group)) russia.group.eachLayer(l => l.bringToFront && l.bringToFront());
+}
+
 function setControlZoneVisible(key, visible) {
   const zone = CONTROL_ZONES[key];
   zone.visible = visible;
   if (!visible) { if (zone.group) map.removeLayer(zone.group); return; }
-  if (zone.group) { zone.group.addTo(map); return; }
+  if (zone.group) { zone.group.addTo(map); raiseRussiaAboveGrayzone(); return; }
   if (zone.loading) return;
   zone.loading = true;
   fetch(zone.file)
@@ -3545,7 +3643,7 @@ function setControlZoneVisible(key, visible) {
         style: { color: zone.outlineColor, weight: 1.5, opacity: 0.9, fillColor: zone.fillColor, fillOpacity: 0.45, smoothFactor: 2.5 }
       });
       zone.loading = false;
-      if (zone.visible) zone.group.addTo(map);
+      if (zone.visible) { zone.group.addTo(map); raiseRussiaAboveGrayzone(); }
     })
     .catch(err => {
       zone.loading = false;
@@ -3568,7 +3666,7 @@ function applyViewMode(mode, skipSave) {
 }
 btnViewHeatmap.addEventListener('click', () => applyViewMode('heatmap'));
 btnViewPolygons.addEventListener('click', () => applyViewMode('polygons'));
-applyViewMode(getPref('viewMode', 'heatmap'), true);
+applyViewMode(getPref('viewMode', 'polygons'), true);
 
 /* ---------------- Right-click coordinates + share link ---------------- */
 const COPY_ICON_SVG = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>';
