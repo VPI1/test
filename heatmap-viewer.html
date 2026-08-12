@@ -480,6 +480,10 @@
         <label for="chkHeatmapMaster"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2.5px;margin-right:7px;"><polygon points="1 6 8 3 16 6 23 3 23 18 16 21 8 18 1 21 1 6"/><line x1="8" y1="3" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="21"/></svg>Map</label>
       </div>
       <div class="overlay-row">
+        <input type="checkbox" id="chkRoads">
+        <label for="chkRoads" title="Roads, railways and place labels on top of whichever basemap is active — Google's own reference layer, same one Hybrid mode already bakes in."><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2.5px;margin-right:3px;"><path d="M4 19L10 5l4 8 3-5 3 11"/><circle cx="10" cy="5" r="1.4" fill="currentColor" stroke="none"/><circle cx="17" cy="8" r="1.4" fill="currentColor" stroke="none"/></svg>Roads &amp; railways</label>
+      </div>
+      <div class="overlay-row">
         <input type="checkbox" id="chkFortMaster">
         <label for="chkFortMaster"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2.5px;margin-right:3px;"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/></svg>All fortifications</label>
       </div>
@@ -553,7 +557,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v5.9</span>
+      <span class="version-tag">v6.0</span>
     </div>
   </div>
 </div>
@@ -928,7 +932,7 @@ const basemaps = {
   })
 };
 const basemapLabels = { google:'Google Satellite', ghybrid:'Google Hybrid', osm:'OpenStreetMap', esri:'Esri Imagery', esriDarkGray:'Esri Dark Gray', esriTopo:'Esri Topographic' };
-let currentBasemapKey = 'google';
+let currentBasemapKey = 'ghybrid';
 basemaps[currentBasemapKey].addTo(map);
 
 const BasemapControl = L.Control.extend({
@@ -965,6 +969,15 @@ const BasemapControl = L.Control.extend({
   }
 });
 map.addControl(new BasemapControl());
+
+// See heatmap-map.html's own copy for the full rationale — Google's
+// roads/labels-only reference layer, toggleable on top of any basemap.
+const roadsOverlay = L.tileLayer('https://{s}.google.com/vt/lyrs=h&x={x}&y={y}&z={z}', {
+  subdomains: ['mt0','mt1','mt2','mt3'], maxZoom: 20, attribution: 'Google Roads', ...FAST_TILE_OPTS
+});
+document.getElementById('chkRoads').addEventListener('change', (e) => {
+  if (e.target.checked) roadsOverlay.addTo(map); else map.removeLayer(roadsOverlay);
+});
 
 /* ---------------- User preferences (persisted) ----------------
    See heatmap-map.html's own copy of this (kept in sync) — one JSON blob for
@@ -2151,12 +2164,22 @@ const FIRMS_KEY_STORAGE_KEY = 'heatmapViewerFirmsKey_v1';
 let firmsOverlay = null;
 let firmsRenderer = null;
 const firmsCache = new Map();
-function firmsAgeColor(acqDate, acqTime) {
+function firmsHoursAgo(acqDate, acqTime) {
   const hhmm = String(acqTime ?? '').padStart(4, '0');
   const acquired = new Date(`${acqDate}T${hhmm.slice(0, 2)}:${hhmm.slice(2, 4)}:00Z`);
-  const hoursAgo = (Date.now() - acquired.getTime()) / 3600000;
+  return (Date.now() - acquired.getTime()) / 3600000;
+}
+function firmsAgeColor(acqDate, acqTime) {
+  const hoursAgo = firmsHoursAgo(acqDate, acqTime);
   const stop = FIRMS_AGE_STOPS.find(s => hoursAgo < s.maxHours);
   return (stop || FIRMS_AGE_STOPS[FIRMS_AGE_STOPS.length - 1]).color;
+}
+function firmsRelativeAgeLabel(acqDate, acqTime) {
+  const hoursAgo = firmsHoursAgo(acqDate, acqTime);
+  if (hoursAgo < 1) return 'under an hour ago';
+  if (hoursAgo < 24) { const h = Math.round(hoursAgo); return `${h} hour${h === 1 ? '' : 's'} ago`; }
+  const d = Math.round(hoursAgo / 24);
+  return `${d} day${d === 1 ? '' : 's'} ago`;
 }
 
 function parseCsv(text) {
@@ -2256,7 +2279,7 @@ async function toggleFirmsOverlay(enabled) {
     const frp = parseFloat(r.frp) || 0;
     L.circleMarker([lat, lng], {
       renderer: firmsRenderer, radius: 4, color, weight: 1, fillColor: color, fillOpacity: 0.7
-    }).bindTooltip(`<strong>${r.acq_date} ${time} UTC</strong><br>${r.satellite || ''} | FRP ${frp} MW | conf ${r.confidence}`)
+    }).bindTooltip(`<strong>${firmsRelativeAgeLabel(r.acq_date, r.acq_time)}</strong> <span style="opacity:.7;">(${r.acq_date} ${time} UTC)</span><br>${r.satellite || ''} | FRP ${frp} MW | conf ${r.confidence}`)
       .addTo(firmsOverlay);
     plotted++;
   });
@@ -2437,15 +2460,15 @@ function refreshHeatLayer(layer) {
    See the matching comment in heatmap-map.html — layer.heatLayer is a live
    canvas that leaflet-heat fully re-derives from layer.points on every
    zoom/pan settle, cost scaling with point count. Whenever nothing is
-   actively changing, this instead bakes a plain raster image of the current
-   (padded) viewport at up to zoom 14 detail and swaps it in — panning/zooming
-   across it is then just a cheap CSS transform, like any map tile, instead of
-   a live recompute. Reuses renderHeatCanvasFromPoints, the same per-pixel
-   renderer bakePolygon already uses for baked shapes. */
-const HEATMAP_RASTER_ZOOM = 14;
-const HEATMAP_RASTER_MAX_DIM = 1600;
+   actively changing, this instead SNAPSHOTS layer.heatLayer's own
+   already-rendered canvas — the exact pixels already on screen, via a plain
+   drawImage + canvas.toBlob(), no per-point recompute at all — into an
+   image, and swaps it in. Panning/zooming across it is then just a cheap
+   CSS transform, like any map tile. toBlob() (not the synchronous
+   toDataURL()) keeps the PNG encode off the main thread so it can't block
+   panning/zooming while it runs. */
 const HEATMAP_RASTER_PADDING = 0.2;
-const HEATMAP_RASTER_SETTLE_MS = 450;
+const HEATMAP_RASTER_SETTLE_MS = 200;
 
 function scheduleHeatRasterBake(layer) {
   clearTimeout(layer._rasterBakeTimer);
@@ -2470,35 +2493,47 @@ function hideHeatRendering(layer) {
   layer._rasterBakeTimer = null;
   if (layer.heatLayer && map.hasLayer(layer.heatLayer)) removeHeatLayer(layer.heatLayer);
   if (layer._rasterOverlay && map.hasLayer(layer._rasterOverlay)) { map.removeLayer(layer._rasterOverlay); layer._rasterOverlay = null; }
-}
-
-function bakeHeatRasterCanvas(layer) {
-  const viewBounds = map.getBounds().pad(HEATMAP_RASTER_PADDING);
-  let zoom = HEATMAP_RASTER_ZOOM, nw, se, width, height;
-  do {
-    nw = map.project(viewBounds.getNorthWest(), zoom);
-    se = map.project(viewBounds.getSouthEast(), zoom);
-    width = Math.ceil(se.x - nw.x);
-    height = Math.ceil(se.y - nw.y);
-    if (width <= HEATMAP_RASTER_MAX_DIM && height <= HEATMAP_RASTER_MAX_DIM) break;
-    zoom--;
-  } while (zoom > 1);
-  if (width <= 0 || height <= 0) return null;
-  return { canvas: renderHeatCanvasFromPoints(layer, layer.points, nw, width, height, zoom), bounds: viewBounds };
+  if (layer._rasterOverlayUrl) { URL.revokeObjectURL(layer._rasterOverlayUrl); layer._rasterOverlayUrl = null; }
 }
 
 function bakeAndShowHeatRaster(layer) {
   layer._rasterBakeTimer = null;
   if (!layer.visible || !heatmapMasterVisible || currentViewMode !== 'heatmap') return;
+  if (!layer.heatLayer || !layer.heatLayer._canvas) return;
   if (!layer.points.length) return;
-  const baked = bakeHeatRasterCanvas(layer);
-  if (!baked) return;
-  if (layer._rasterOverlay) map.removeLayer(layer._rasterOverlay);
-  layer._rasterOverlay = L.imageOverlay(baked.canvas.toDataURL(), baked.bounds, { opacity: 1, interactive: false });
-  layer._rasterOverlay.addTo(map);
-  const img = layer._rasterOverlay.getElement();
-  if (img) img.style.filter = `blur(${canvasBlurPxFor(layer)}px)`;
-  if (layer.heatLayer && map.hasLayer(layer.heatLayer)) removeHeatLayer(layer.heatLayer);
+  const liveCanvas = layer.heatLayer._canvas;
+  const mapSize = map.getSize();
+  if (liveCanvas.width !== mapSize.x || liveCanvas.height !== mapSize.y) return;
+
+  const padX = Math.round(mapSize.x * HEATMAP_RASTER_PADDING);
+  const padY = Math.round(mapSize.y * HEATMAP_RASTER_PADDING);
+  const canvas = document.createElement('canvas');
+  canvas.width = mapSize.x + padX * 2;
+  canvas.height = mapSize.y + padY * 2;
+  canvas.getContext('2d').drawImage(liveCanvas, padX, padY);
+  const bounds = L.latLngBounds(
+    map.containerPointToLatLng([-padX, -padY]),
+    map.containerPointToLatLng([mapSize.x + padX, mapSize.y + padY])
+  );
+
+  layer._rasterBakeRequestId = (layer._rasterBakeRequestId || 0) + 1;
+  const requestId = layer._rasterBakeRequestId;
+  // WebP over the default PNG: ~6x faster to encode, ~5x smaller, while
+  // keeping the transparency the basemap needs to show through — falls back
+  // to PNG on its own per spec if a browser can't encode WebP.
+  canvas.toBlob(blob => {
+    if (!blob || layer._rasterBakeRequestId !== requestId) return;
+    if (!layer.visible || !heatmapMasterVisible || currentViewMode !== 'heatmap') return;
+    if (layer._rasterOverlay) map.removeLayer(layer._rasterOverlay);
+    if (layer._rasterOverlayUrl) URL.revokeObjectURL(layer._rasterOverlayUrl);
+    const url = URL.createObjectURL(blob);
+    layer._rasterOverlayUrl = url;
+    layer._rasterOverlay = L.imageOverlay(url, bounds, { opacity: 1, interactive: false });
+    layer._rasterOverlay.addTo(map);
+    const img = layer._rasterOverlay.getElement();
+    if (img) img.style.filter = `blur(${canvasBlurPxFor(layer)}px)`;
+    if (layer.heatLayer && map.hasLayer(layer.heatLayer)) removeHeatLayer(layer.heatLayer);
+  }, 'image/webp', 0.85);
 }
 
 /* ---------------- Exposure calibration ----------------
