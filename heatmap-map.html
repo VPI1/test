@@ -691,7 +691,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v6.0</span>
+      <span class="version-tag">v6.1</span>
     </div>
   </div>
 </div>
@@ -3122,34 +3122,33 @@ map.on('zoomstart', () => {
   });
 });
 
-// Scroll-wheel zooming can fire several 'zoomend' events in quick succession (one per
-// level the wheel scrolls through) — regenerating every polygon's full grid fill on
-// EACH of those intermediate levels, only to immediately redo it for the next one, was
-// a real source of the reported zoom lag. A plain trailing debounce fixed that, but
-// introduced a worse-looking regression: the fill is viewport-clipped (see
-// viewportClippedBounds), so during the debounce delay the map kept showing the OLD,
-// smaller-viewport fill from before the zoom — for a zoom OUT specifically, that
-// stale fill only covers a small patch of the now much larger visible area, showing
-// as a hard, wrong-looking edge where colored fill abruptly cuts to bare basemap.
-// A leading+trailing pattern fixes both: an isolated zoom step (the common case)
-// regenerates immediately, so there's no stale-fill window at all; only a genuine
-// rapid burst of several zoomend events in a row falls back to one deferred,
-// trailing regeneration once it actually settles.
+// Scroll-wheel zooming can fire several 'zoomend' events in quick succession
+// (one per level the wheel scrolls through), and performZoomRegeneration is
+// genuinely expensive for a heavily-painted layer (resampling every
+// stroke/polygon's point cloud at the new zoom's density) — running it on
+// EVERY intermediate zoomend, only to immediately redo it for the next one,
+// was a real, measured source of zoom lag on its own.
+//
+// This used to regenerate immediately on an ISOLATED zoom step (the common
+// case) and only defer for a genuine rapid burst, specifically because
+// deferring meant the map kept showing the OLD, viewport-clipped live fill
+// from before the zoom — for a zoom OUT, that stale fill covered only a
+// small patch of the now much larger view, a hard, wrong-looking edge where
+// color abruptly cut to bare basemap. That's no longer what's actually on
+// screen during the deferred window: the heat-raster block above already
+// keeps a padded, CSS-scaled snapshot showing throughout ANY zoom (see
+// bakeAndShowHeatRaster) — a plain, always-deferred settle, same pattern as
+// the pan settle timer below, is what actually gets zooming close to
+// feeling as fluid as the Polygons view, since NOTHING expensive runs until
+// the user actually stops on a zoom level, not on every single step.
 let zoomRegenTimer = null;
-let zoomRegenCooldownUntil = 0;
+const ZOOM_REGEN_SETTLE_MS = 250;
 map.on('zoomend', () => {
-  const now = performance.now();
-  if (now >= zoomRegenCooldownUntil) {
+  if (zoomRegenTimer) clearTimeout(zoomRegenTimer);
+  zoomRegenTimer = setTimeout(() => {
+    zoomRegenTimer = null;
     performZoomRegeneration();
-    zoomRegenCooldownUntil = now + 150;
-  } else {
-    if (zoomRegenTimer) clearTimeout(zoomRegenTimer);
-    zoomRegenTimer = setTimeout(() => {
-      zoomRegenTimer = null;
-      performZoomRegeneration();
-      zoomRegenCooldownUntil = performance.now() + 150;
-    }, 150);
-  }
+  }, ZOOM_REGEN_SETTLE_MS);
 });
 
 // Pans (moveend) also need to reveal any newly-visible area of a polygon larger than
@@ -3186,14 +3185,26 @@ function rasterCoversView(layer) {
   return !!(layer._rasterOverlay && map.hasLayer(layer._rasterOverlay) && layer._rasterOverlay.getBounds().contains(map.getBounds()));
 }
 
+// revealPannedPolygonArea/revealPannedStrokes used to run immediately on
+// every moveend (before the settle timer below), on the reasoning that
+// they're cheap when nothing new was revealed. For a pan that DOES reveal a
+// lot of new area, though, that's not actually cheap — and there's no
+// longer a reason to pay it immediately: the heat-raster block above
+// already keeps a padded, CSS-scaled snapshot showing throughout the pan,
+// so — same as zoom above — NOTHING needs to run until the user actually
+// stops moving, not on every intermediate drag tick or moveend.
 let panFillSettleTimer = null;
 map.on('moveend', () => {
   if (currentViewMode !== 'heatmap' || !heatmapMasterVisible) return;
-  layers.forEach(layer => { revealPannedPolygonArea(layer); revealPannedStrokes(layer); });
   if (panFillSettleTimer) clearTimeout(panFillSettleTimer);
   panFillSettleTimer = setTimeout(() => {
     panFillSettleTimer = null;
-    layers.forEach(layer => { if (!rasterCoversView(layer)) regenerateLayerShapes(layer); });
+    layers.forEach(layer => {
+      if (rasterCoversView(layer)) return;
+      revealPannedPolygonArea(layer);
+      revealPannedStrokes(layer);
+      regenerateLayerShapes(layer);
+    });
   }, PAN_FILL_SETTLE_MS);
 });
 
