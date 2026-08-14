@@ -557,7 +557,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v6.0</span>
+      <span class="version-tag">v6.1</span>
     </div>
   </div>
 </div>
@@ -2646,21 +2646,19 @@ map.on('zoomstart', () => {
   });
 });
 
+// See the matching comment in heatmap-map.html — always deferred now rather
+// than regenerating immediately on an isolated zoom step, since the
+// heat-raster block above already keeps a padded, CSS-scaled snapshot
+// showing throughout any zoom, so nothing expensive needs to run until the
+// user actually stops on a level.
 let zoomRegenTimer = null;
-let zoomRegenCooldownUntil = 0;
+const ZOOM_REGEN_SETTLE_MS = 250;
 map.on('zoomend', () => {
-  const now = performance.now();
-  if (now >= zoomRegenCooldownUntil) {
+  if (zoomRegenTimer) clearTimeout(zoomRegenTimer);
+  zoomRegenTimer = setTimeout(() => {
+    zoomRegenTimer = null;
     performZoomRegeneration();
-    zoomRegenCooldownUntil = now + 150;
-  } else {
-    if (zoomRegenTimer) clearTimeout(zoomRegenTimer);
-    zoomRegenTimer = setTimeout(() => {
-      zoomRegenTimer = null;
-      performZoomRegeneration();
-      zoomRegenCooldownUntil = performance.now() + 150;
-    }, 150);
-  }
+  }, ZOOM_REGEN_SETTLE_MS);
 });
 
 // Same currentViewMode/heatmapMasterVisible guard as performZoomRegeneration
@@ -2670,9 +2668,30 @@ map.on('zoomend', () => {
 // of thousands of points AND re-encoding a baked shape's canvas to a PNG data
 // URL (bakePolygon's canvas.toDataURL(), not cheap) — for every layer, on
 // every pan, entirely for output nobody could see.
+// True while the layer's cached raster (see the heat-raster block above)
+// already covers the current view — panning around inside it is exactly
+// like panning across a tile, nothing needs to be recomputed at all.
+function rasterCoversView(layer) {
+  return !!(layer._rasterOverlay && map.hasLayer(layer._rasterOverlay) && layer._rasterOverlay.getBounds().contains(map.getBounds()));
+}
+
+// Deferred rather than running revealPannedPolygonArea/revealPannedStrokes
+// immediately on every moveend — same reasoning as the zoomend handler
+// above: the raster already keeps something reasonable on screen throughout
+// the pan, so nothing needs to run until the user actually stops.
+const PAN_FILL_SETTLE_MS = 350;
+let panFillSettleTimer = null;
 map.on('moveend', () => {
   if (currentViewMode !== 'heatmap' || !heatmapMasterVisible) return;
-  layers.forEach(layer => { revealPannedPolygonArea(layer); revealPannedStrokes(layer); });
+  if (panFillSettleTimer) clearTimeout(panFillSettleTimer);
+  panFillSettleTimer = setTimeout(() => {
+    panFillSettleTimer = null;
+    layers.forEach(layer => {
+      if (rasterCoversView(layer)) return;
+      revealPannedPolygonArea(layer);
+      revealPannedStrokes(layer);
+    });
+  }, PAN_FILL_SETTLE_MS);
 });
 
 function getLayer(id) { return layers.find(l => l.id === id); }
