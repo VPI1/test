@@ -364,7 +364,7 @@
   .horizon-progress-track{width:100%;height:4px;background:var(--border);border-radius:2px;overflow:hidden;display:none;}
   .horizon-progress-fill{height:100%;width:0%;background:var(--accent);transition:width .12s linear;}
   .horizon-panorama-wrap{width:100%;}
-  .horizon-photo-viewport{width:100%;max-width:420px;height:140px;overflow-x:auto;overflow-y:hidden;border-radius:6px;border:1px solid var(--border);cursor:grab;touch-action:pan-x;}
+  .horizon-photo-viewport{width:100%;max-width:420px;height:140px;overflow:auto;border-radius:6px;border:1px solid var(--border);cursor:grab;touch-action:none;}
   .horizon-photo-viewport:active{cursor:grabbing;}
   .horizon-photo-viewport img{display:block;}
   .micro-label{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--sub);margin-bottom:2px;}
@@ -563,7 +563,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v6.5</span>
+      <span class="version-tag">v6.6</span>
     </div>
   </div>
 </div>
@@ -4326,10 +4326,18 @@ const HORIZON_EYE_HEIGHT_M = 1.8;
 // to draw. Linear (not quadratic) distance spacing, too — quadratic
 // deliberately thinned out resolution at range, which fought directly
 // against wanting the raster to stay just as granular at 15km as at 1.5km.
-const HORIZON_NUM_BEARINGS_COARSE = 140;
-const HORIZON_NUM_BEARINGS_PRECISE = 280;
-const HORIZON_SAMPLES_PER_RAY_COARSE = 45;
-const HORIZON_SAMPLES_PER_RAY_PRECISE = 65;
+// Bumped again — the first pass (140/280 bearings) was still visibly
+// blockier than heywhatsthat's own visibility cloak, whose points read as
+// individually much smaller and pick out small visible pockets ours was
+// just averaging over. Since the elevation lookups are tile-cached (see
+// fetchElevTile) and nearby rays/samples mostly land on tiles already
+// fetched for a neighbor, raising these doesn't cost anywhere near a
+// proportional amount of network time — it's almost pure extra CPU
+// (angle math + canvas stamps), which is cheap at this scale.
+const HORIZON_NUM_BEARINGS_COARSE = 300;
+const HORIZON_NUM_BEARINGS_PRECISE = 520;
+const HORIZON_SAMPLES_PER_RAY_COARSE = 90;
+const HORIZON_SAMPLES_PER_RAY_PRECISE = 130;
 const HORIZON_MAX_RANGE_CAP_M = 80000; // safety cap — an observer on a very tall point could otherwise ask for a huge, slow-to-sample area
 // Coarse (zoom 11, ~150-300m/px depending on latitude) stays fast because
 // each tile fetch (see fetchElevTile's cache) covers a wide area — the
@@ -5053,10 +5061,12 @@ async function captureHorizonPanoramaPhoto() {
     renderHorizonPhotoPanorama(entry);
   }, 'image/jpeg', 0.85);
 }
-// One continuous image spanning the full 360°, shown at native size inside
-// a fixed-width viewport with horizontal scroll — drag (or trackpad/wheel
-// scroll) pans across it. Mapping mouse position to a bearing is a plain
-// fraction of the total composite width, same idea as every other chart's
+// One continuous image spanning the full 360°, shown inside a fixed-size
+// viewport with both scroll axes — drag (or trackpad/wheel scroll) pans
+// across it, scroll-wheel zooms it (toward the cursor, like the SVG charts
+// elsewhere in this panel). Mapping mouse position to a bearing is a plain
+// fraction of the CURRENTLY DISPLAYED width (not the native composite
+// width — those differ once zoomed), same idea as every other chart's
 // hover-to-map-marker here, just driven by scrollLeft + cursor offset
 // instead of an SVG coordinate.
 function renderHorizonPhotoPanorama(entry) {
@@ -5064,22 +5074,44 @@ function renderHorizonPhotoPanorama(entry) {
     horizonPhotoWrapEl.innerHTML = `<div class="micro-label">360° photo</div><div style="font-size:11px;color:var(--sub);padding:6px 0;">Couldn't render — try again.</div>`;
     return;
   }
-  horizonPhotoWrapEl.innerHTML = `<div class="micro-label">360° photo — drag to pan around, hover to highlight on the map</div>
+  horizonPhotoWrapEl.innerHTML = `<div class="micro-label">360° photo — drag to pan, scroll to zoom, hover to highlight on the map</div>
     <div class="horizon-photo-viewport" id="horizonPhotoViewport"><img src="${entry.photoUrl}" width="${entry.photoWidth}" height="${entry.photoHeight}" draggable="false"/></div>`;
   wireHorizonPhotoPan(horizonPhotoWrapEl.querySelector('#horizonPhotoViewport'), entry);
 }
+const HORIZON_PHOTO_MIN_ZOOM = 0.5, HORIZON_PHOTO_MAX_ZOOM = 5;
 function wireHorizonPhotoPan(viewport, entry) {
-  let dragging = false, dragStartX = 0, dragStartScroll = 0;
+  const img = viewport.querySelector('img');
+  let zoom = 1;
+  function applyZoom(newZoom, cursorClientX, cursorClientY) {
+    newZoom = Math.min(HORIZON_PHOTO_MAX_ZOOM, Math.max(HORIZON_PHOTO_MIN_ZOOM, newZoom));
+    const rect = viewport.getBoundingClientRect();
+    const fracX = (viewport.scrollLeft + (cursorClientX - rect.left)) / img.width;
+    const fracY = (viewport.scrollTop + (cursorClientY - rect.top)) / img.height;
+    zoom = newZoom;
+    img.width = entry.photoWidth * zoom;
+    img.height = entry.photoHeight * zoom;
+    viewport.scrollLeft = fracX * img.width - (cursorClientX - rect.left);
+    viewport.scrollTop = fracY * img.height - (cursorClientY - rect.top);
+  }
+  viewport.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    applyZoom(zoom * (e.deltaY > 0 ? 1 / 1.15 : 1.15), e.clientX, e.clientY);
+  }, { passive: false });
+  let dragging = false, dragStartX = 0, dragStartY = 0, dragStartScrollX = 0, dragStartScrollY = 0;
   viewport.addEventListener('pointerdown', (e) => {
     dragging = true;
     try { viewport.setPointerCapture(e.pointerId); } catch (err) {}
-    dragStartX = e.clientX; dragStartScroll = viewport.scrollLeft;
+    dragStartX = e.clientX; dragStartY = e.clientY;
+    dragStartScrollX = viewport.scrollLeft; dragStartScrollY = viewport.scrollTop;
   });
   viewport.addEventListener('pointermove', (e) => {
-    if (dragging) viewport.scrollLeft = dragStartScroll - (e.clientX - dragStartX);
+    if (dragging) {
+      viewport.scrollLeft = dragStartScrollX - (e.clientX - dragStartX);
+      viewport.scrollTop = dragStartScrollY - (e.clientY - dragStartY);
+    }
     const rect = viewport.getBoundingClientRect();
     const xInImage = viewport.scrollLeft + (e.clientX - rect.left);
-    const bearing = (Math.min(1, Math.max(0, xInImage / entry.photoWidth))) * 360;
+    const bearing = (Math.min(1, Math.max(0, xInImage / img.width))) * 360;
     const rayIdx = nearestHorizonRayIndex(entry, bearing);
     if (entry.frontier[rayIdx]) showChartHoverMapMarker(entry.frontier[rayIdx]);
   });
@@ -5087,6 +5119,7 @@ function wireHorizonPhotoPan(viewport, entry) {
   viewport.addEventListener('pointerup', endDrag);
   viewport.addEventListener('pointercancel', endDrag);
   viewport.addEventListener('pointerleave', () => hideChartHoverMapMarker());
+  viewport.addEventListener('dblclick', (e) => applyZoom(zoom < 1.5 ? 2 : 1, e.clientX, e.clientY)); // quick zoom in/reset, matching common image-viewer convention
 }
 function horizonPhotoButtonClick() {
   if (!currentHorizonEntry) return;
@@ -5110,7 +5143,11 @@ function horizonPhotoButtonClick() {
 // technique). Real gaps (an actual blocked patch) stay gaps; this doesn't
 // invent detail the ray data doesn't have, it just stops throwing away
 // everything except the single farthest point per direction.
-const HORIZON_RASTER_DIM_PX = 900;
+// Raised alongside the bearing/sample bump above — the raster's own pixel
+// grid was the other half of the "too blocky" problem: even perfectly
+// placed sub-pixel-sized stamps still round to visibly chunky dots on a
+// too-coarse canvas.
+const HORIZON_RASTER_DIM_PX = 1500;
 function buildHorizonVisibilityRaster(entry) {
   const visible = entry.raySamples.flatMap(s => s.filter(p => p.visible));
   if (!visible.length) return null;
