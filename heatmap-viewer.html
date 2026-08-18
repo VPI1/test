@@ -364,11 +364,9 @@
   .horizon-progress-track{width:100%;height:4px;background:var(--border);border-radius:2px;overflow:hidden;display:none;}
   .horizon-progress-fill{height:100%;width:0%;background:var(--accent);transition:width .12s linear;}
   .horizon-panorama-wrap{width:100%;}
-  .horizon-photo-strip{display:flex;gap:4px;overflow-x:auto;padding-bottom:4px;}
-  .horizon-photo-frame{position:relative;flex:0 0 auto;cursor:pointer;border-radius:5px;overflow:hidden;border:1px solid var(--border);}
-  .horizon-photo-frame:hover{border-color:#ff9e4a;}
-  .horizon-photo-frame img{display:block;}
-  .horizon-photo-frame-label{position:absolute;left:3px;bottom:2px;font-size:9px;color:#fff;text-shadow:0 1px 2px #000;}
+  .horizon-photo-viewport{width:100%;max-width:420px;height:140px;overflow-x:auto;overflow-y:hidden;border-radius:6px;border:1px solid var(--border);cursor:grab;touch-action:pan-x;}
+  .horizon-photo-viewport:active{cursor:grabbing;}
+  .horizon-photo-viewport img{display:block;}
   .micro-label{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--sub);margin-bottom:2px;}
   .horizon-history-list{display:flex;flex-wrap:wrap;gap:5px;max-height:70px;overflow-y:auto;}
   .horizon-history-item{
@@ -565,7 +563,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v6.4</span>
+      <span class="version-tag">v6.5</span>
     </div>
   </div>
 </div>
@@ -4965,20 +4963,21 @@ function selectHorizonBearing(entry, idx, mapClickLatLng) {
    Reuses the app's existing 3D module (real WebGL terrain + basemap
    imagery, see the "3D view" block above) rather than building a second
    renderer: rotates that same camera through a full circle at the
-   observer's own point and captures each frame, so what comes out is the
-   real terrain+imagery this app already knows how to draw, not a synthetic
-   illustration. Deliberately opt-in (a button, not run automatically with
-   every calculation) — it's dozens of real tile-load waits, nothing like
-   the near-instant DEM-only scan, and Coarse/Precise both staying fast is
-   the whole point of the raster-visibility rework above. Frames are shown
-   as a labeled filmstrip rather than attempting a seamless equirectangular
-   stitch — MapLibre's camera FOV isn't something this app tracks precisely
-   enough to line up adjacent frames pixel-for-pixel, and a clearly-discrete
-   "here's due N, here's due NE, ..." strip is honest about what it is
-   instead of faking a seam that wouldn't actually match. */
+   observer's own point, capturing each frame straight into one wide
+   composite canvas — so what comes out is the real terrain+imagery this
+   app already knows how to draw, not a synthetic illustration, shown as a
+   single image you pan across rather than a strip of separate tiles.
+   Deliberately opt-in (a button, not run automatically with every
+   calculation) — it's dozens of real tile-load waits, nothing like the
+   near-instant DEM-only scan, and Coarse/Precise both staying fast is the
+   whole point of the raster-visibility rework above. Capture runs with the
+   3D container left hidden (no `.active` class) — nothing here needs the
+   camera actually painted to screen, just its pixels read back once each
+   frame settles, so there's no reason to show the rotation happening. */
 const HORIZON_PHOTO_FRAME_COUNT = 24; // 15° apart
-const HORIZON_PHOTO_FRAME_W = 168, HORIZON_PHOTO_FRAME_H = 104;
+const HORIZON_PHOTO_FRAME_W = 220, HORIZON_PHOTO_FRAME_H = 140;
 let horizonPhotoRequestId = 0;
+let horizonPhotoUrl = null; // tracked for revocation, same pattern as the visibility raster's object URL
 function waitFor3DReady(timeoutMs = 8000) {
   return new Promise(resolve => {
     if (map3DReady) return resolve();
@@ -4993,7 +4992,9 @@ function waitFor3DReady(timeoutMs = 8000) {
 // module listens for this already, so this is new, not a rename. The
 // timeout is a safety net: a basemap provider hitting its own tile-zoom
 // ceiling, or a slow/failed fetch, can otherwise mean 'idle' never fires
-// at all for that frame.
+// at all for that frame. Importantly, this is driven by the source-loading
+// state machine, not by whether the canvas is actually being painted to
+// screen, so it fires the same whether #map3d is visible or not.
 function waitFor3DIdle(timeoutMs = 4000) {
   return new Promise(resolve => {
     if (!map3DGL) return resolve();
@@ -5004,69 +5005,92 @@ function waitFor3DIdle(timeoutMs = 4000) {
     setTimeout(done, timeoutMs);
   });
 }
-function downscaleCanvasToDataUrl(canvas, targetW, targetH) {
-  const off = document.createElement('canvas');
-  off.width = targetW; off.height = targetH;
-  off.getContext('2d').drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, targetW, targetH);
-  return off.toDataURL('image/jpeg', 0.82); // JPEG — these are real rendered photos, not data to decode later, so lossy-but-small is the right tradeoff for a 24-frame strip
+function renderHorizonPhotoProgress(pct) {
+  horizonPhotoWrapEl.innerHTML = `<div class="micro-label">360° photo</div>
+    <div class="horizon-progress-track" style="display:block;"><div class="horizon-progress-fill" style="width:${pct}%;"></div></div>`;
 }
 async function captureHorizonPanoramaPhoto() {
   const entry = currentHorizonEntry;
   if (!entry) return;
   const myRequestId = ++horizonPhotoRequestId;
-  const setStatus = (html) => { horizonPhotoWrapEl.innerHTML = `<div class="micro-label">360° photo</div><div style="font-size:11px;color:var(--sub);padding:6px 0;">${html}</div>`; };
-  setStatus('Setting up the 3D view…');
+  renderHorizonPhotoProgress(0);
   ensure3DMap();
   await waitFor3DReady();
   if (myRequestId !== horizonPhotoRequestId) return; // cancelled (Clear, a new calc, or the button clicked again) while waiting
-  if (!map3DGL) { setStatus('3D terrain view isn\'t available.'); return; }
-  const wasActive = map3DContainerEl.classList.contains('active');
-  map3DContainerEl.classList.add('active'); // paint to screen for real — a hidden canvas may still render, but this isn't worth risking
+  if (!map3DGL) { horizonPhotoWrapEl.innerHTML = `<div class="micro-label">360° photo</div><div style="font-size:11px;color:var(--sub);padding:6px 0;">3D terrain view isn't available.</div>`; return; }
   const prevMaxZoom = map3DGL.getMaxZoom();
   const prevState = { center: map3DGL.getCenter(), zoom: map3DGL.getZoom(), pitch: map3DGL.getPitch(), bearing: map3DGL.getBearing() };
   function restore() {
     map3DGL.setMaxZoom(prevMaxZoom);
     map3DGL.jumpTo(prevState);
-    if (!wasActive) map3DContainerEl.classList.remove('active');
   }
   map3DGL.setMaxZoom(GROUND_VIEW_MAX_ZOOM); // same ceiling ground view uses — confirmed stable at this steep a pitch, see that code's own comment
   map3DGL.jumpTo({ center: { lng: entry.point.lng, lat: entry.point.lat }, zoom: GROUND_VIEW_ZOOM, pitch: 85, bearing: 0 });
   await waitFor3DIdle();
   if (myRequestId !== horizonPhotoRequestId) { restore(); return; }
-  const frames = [];
+  const composite = document.createElement('canvas');
+  composite.width = HORIZON_PHOTO_FRAME_W * HORIZON_PHOTO_FRAME_COUNT;
+  composite.height = HORIZON_PHOTO_FRAME_H;
+  const ctx = composite.getContext('2d');
   for (let i = 0; i < HORIZON_PHOTO_FRAME_COUNT; i++) {
-    setStatus(`Rendering ${i + 1} of ${HORIZON_PHOTO_FRAME_COUNT}…`);
+    renderHorizonPhotoProgress(Math.round((i / HORIZON_PHOTO_FRAME_COUNT) * 100));
     const bearing = (360 / HORIZON_PHOTO_FRAME_COUNT) * i;
     map3DGL.jumpTo({ bearing });
     await waitFor3DIdle();
     if (myRequestId !== horizonPhotoRequestId) { restore(); return; }
-    frames.push({ bearing, dataUrl: downscaleCanvasToDataUrl(map3DGL.getCanvas(), HORIZON_PHOTO_FRAME_W, HORIZON_PHOTO_FRAME_H) });
+    const src = map3DGL.getCanvas();
+    ctx.drawImage(src, 0, 0, src.width, src.height, i * HORIZON_PHOTO_FRAME_W, 0, HORIZON_PHOTO_FRAME_W, HORIZON_PHOTO_FRAME_H);
   }
   restore();
-  entry.photoFrames = frames;
-  renderHorizonPhotoFilmstrip(entry);
+  renderHorizonPhotoProgress(100);
+  composite.toBlob(blob => {
+    if (!blob || myRequestId !== horizonPhotoRequestId) return;
+    if (horizonPhotoUrl) URL.revokeObjectURL(horizonPhotoUrl);
+    horizonPhotoUrl = URL.createObjectURL(blob);
+    entry.photoUrl = horizonPhotoUrl;
+    entry.photoWidth = composite.width;
+    entry.photoHeight = composite.height;
+    renderHorizonPhotoPanorama(entry);
+  }, 'image/jpeg', 0.85);
 }
-function renderHorizonPhotoFilmstrip(entry) {
-  const frames = entry.photoFrames;
-  if (!frames || !frames.length) {
+// One continuous image spanning the full 360°, shown at native size inside
+// a fixed-width viewport with horizontal scroll — drag (or trackpad/wheel
+// scroll) pans across it. Mapping mouse position to a bearing is a plain
+// fraction of the total composite width, same idea as every other chart's
+// hover-to-map-marker here, just driven by scrollLeft + cursor offset
+// instead of an SVG coordinate.
+function renderHorizonPhotoPanorama(entry) {
+  if (!entry.photoUrl) {
     horizonPhotoWrapEl.innerHTML = `<div class="micro-label">360° photo</div><div style="font-size:11px;color:var(--sub);padding:6px 0;">Couldn't render — try again.</div>`;
     return;
   }
-  const framesHtml = frames.map((f, i) =>
-    `<div class="horizon-photo-frame" data-idx="${i}"><img src="${f.dataUrl}" width="${HORIZON_PHOTO_FRAME_W}" height="${HORIZON_PHOTO_FRAME_H}" draggable="false"/><span class="horizon-photo-frame-label">${formatBearingCompass(f.bearing)}</span></div>`
-  ).join('');
-  horizonPhotoWrapEl.innerHTML = `<div class="micro-label">360° photo — hover a frame to highlight that direction, click to inspect its profile</div><div class="horizon-photo-strip">${framesHtml}</div>`;
-  horizonPhotoWrapEl.querySelectorAll('.horizon-photo-frame').forEach(el => {
-    const f = frames[+el.dataset.idx];
-    const rayIdx = nearestHorizonRayIndex(entry, f.bearing);
-    el.addEventListener('mouseenter', () => { if (entry.frontier[rayIdx]) showChartHoverMapMarker(entry.frontier[rayIdx]); });
-    el.addEventListener('mouseleave', () => hideChartHoverMapMarker());
-    el.addEventListener('click', () => selectHorizonBearing(entry, rayIdx));
+  horizonPhotoWrapEl.innerHTML = `<div class="micro-label">360° photo — drag to pan around, hover to highlight on the map</div>
+    <div class="horizon-photo-viewport" id="horizonPhotoViewport"><img src="${entry.photoUrl}" width="${entry.photoWidth}" height="${entry.photoHeight}" draggable="false"/></div>`;
+  wireHorizonPhotoPan(horizonPhotoWrapEl.querySelector('#horizonPhotoViewport'), entry);
+}
+function wireHorizonPhotoPan(viewport, entry) {
+  let dragging = false, dragStartX = 0, dragStartScroll = 0;
+  viewport.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    try { viewport.setPointerCapture(e.pointerId); } catch (err) {}
+    dragStartX = e.clientX; dragStartScroll = viewport.scrollLeft;
   });
+  viewport.addEventListener('pointermove', (e) => {
+    if (dragging) viewport.scrollLeft = dragStartScroll - (e.clientX - dragStartX);
+    const rect = viewport.getBoundingClientRect();
+    const xInImage = viewport.scrollLeft + (e.clientX - rect.left);
+    const bearing = (Math.min(1, Math.max(0, xInImage / entry.photoWidth))) * 360;
+    const rayIdx = nearestHorizonRayIndex(entry, bearing);
+    if (entry.frontier[rayIdx]) showChartHoverMapMarker(entry.frontier[rayIdx]);
+  });
+  function endDrag(e) { dragging = false; try { viewport.releasePointerCapture(e.pointerId); } catch (err) {} }
+  viewport.addEventListener('pointerup', endDrag);
+  viewport.addEventListener('pointercancel', endDrag);
+  viewport.addEventListener('pointerleave', () => hideChartHoverMapMarker());
 }
 function horizonPhotoButtonClick() {
   if (!currentHorizonEntry) return;
-  if (horizonPhotoRequestId > 0 && horizonPhotoWrapEl.textContent.includes('Rendering')) {
+  if (horizonPhotoRequestId > 0 && horizonPhotoWrapEl.querySelector('.horizon-progress-track')) {
     horizonPhotoRequestId++; // in-flight — this click cancels it instead of starting a second one
     horizonPhotoWrapEl.innerHTML = `<div class="micro-label">360° photo</div><div style="font-size:11px;color:var(--sub);padding:6px 0;">Cancelled.</div>`;
     return;
@@ -5100,14 +5124,26 @@ function buildHorizonVisibilityRaster(entry) {
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#ff9e4a';
   const angularSpacingRad = (2 * Math.PI) / numBearings;
+  // Distance samples are linearly spaced (see computeAndDrawHorizon), so the
+  // gap to a point's RADIAL neighbor (same ray, next distance out) is a
+  // constant maxRangeM/samplesPerRay — often bigger than the angular gap to
+  // its ring-neighbors, especially close to the observer. Sizing the stamp
+  // off angular spacing alone (the original version of this) left that
+  // radial gap unbridged, which is exactly what produced concentric rings
+  // with visible bands of bare map between them instead of a filled area:
+  // every ray's visible run was getting drawn as a series of separated dots
+  // along its own length, not a continuous stripe. Taking the larger of the
+  // two gaps fixes that without inventing detail — a genuine blocked patch
+  // still spans many consecutive samples, far more than one stamp radius
+  // could ever paper over.
+  const radialStepM = maxRangeM / (entry.raySamples[0] ? entry.raySamples[0].length : 1);
   visible.forEach(p => {
     const dx = (p.latlng.lng - point.lng) * mLng;
     const dy = (p.latlng.lat - point.lat) * mLat;
     const x = HORIZON_RASTER_DIM_PX / 2 + dx * pxPerM;
     const y = HORIZON_RASTER_DIM_PX / 2 - dy * pxPerM;
-    // Stamp radius bridges the gap to this point's ring-neighbors (arc
-    // length = distance x angular spacing) without ballooning far out.
-    const stampRadiusM = Math.max(10, p.distM * angularSpacingRad * 0.75);
+    const angularGapM = p.distM * angularSpacingRad;
+    const stampRadiusM = Math.max(10, Math.max(angularGapM, radialStepM) * 0.62);
     const rPx = Math.max(1.2, stampRadiusM * pxPerM);
     ctx.beginPath();
     ctx.arc(x, y, rPx, 0, Math.PI * 2);
@@ -5158,7 +5194,7 @@ function drawHorizonResult(entry) {
     horizonProfileWrapEl.innerHTML = '';
   }
   horizonPhotoRequestId++; // invalidate any capture still running for a different entry
-  if (entry.photoFrames) renderHorizonPhotoFilmstrip(entry); // kept in memory from an earlier capture this session
+  if (entry.photoUrl) renderHorizonPhotoPanorama(entry); // kept in memory from an earlier capture this session
   else horizonPhotoWrapEl.innerHTML = '';
 }
 function addHorizonHistoryEntry(entry) {
@@ -5256,6 +5292,7 @@ function horizonClear() {
   if (horizonMarker) { map.removeLayer(horizonMarker); horizonMarker = null; }
   if (horizonShape) { map.removeLayer(horizonShape); horizonShape = null; }
   if (horizonRasterUrl) { URL.revokeObjectURL(horizonRasterUrl); horizonRasterUrl = null; }
+  if (horizonPhotoUrl) { URL.revokeObjectURL(horizonPhotoUrl); horizonPhotoUrl = null; }
   horizonProgressTrack.style.display = 'none';
   horizonResultEl.textContent = 'Click a point on the map';
   horizonPanoramaWrapEl.innerHTML = '';
