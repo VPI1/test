@@ -358,6 +358,7 @@
     background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 4px 14px #0007;
     padding:9px 12px;font-size:12.5px;flex-direction:column;gap:7px;
     width:min(460px,calc(100vw - 28px));
+    max-height:calc(100vh - 90px);overflow-y:auto;
   }
   .panel-header-row{display:flex;align-items:center;justify-content:space-between;gap:8px;}
   .horizon-progress-track{width:100%;height:4px;background:var(--border);border-radius:2px;overflow:hidden;display:none;}
@@ -559,7 +560,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v6.2</span>
+      <span class="version-tag">v6.3</span>
     </div>
   </div>
 </div>
@@ -643,6 +644,7 @@
   <span class="panel-stat" id="horizonResult">Click a point on the map</span>
   <div class="horizon-progress-track" id="horizonProgressTrack"><div class="horizon-progress-fill" id="horizonProgressFill"></div></div>
   <div class="horizon-panorama-wrap" id="horizonPanoramaWrap"></div>
+  <div class="horizon-panorama-wrap" id="horizonProfileWrap"></div>
   <div class="horizon-history-list" id="horizonHistoryList" title="Past calculations at this session — click one to see it again without recalculating. Also marked on the map as small dots while this tool is active."></div>
 </div>
 
@@ -4113,23 +4115,9 @@ async function fetchElevationAt(latlng, zoomOverride) {
   const tileX = Math.floor(point.x / 256), tileY = Math.floor(point.y / 256);
   const tile = await fetchElevTile(z, tileX, tileY);
   if (!tile) return null;
-  // Bilinear blend of the 4 nearest pixels instead of snapping to whichever
-  // one the point happens to fall in — a real (if modest) accuracy gain at
-  // no extra fetch cost, since the underlying source data is itself often
-  // coarser than a pixel at these zooms, so this mainly removes the
-  // "staircase" jump between neighboring lookups rather than adding new
-  // information beyond that floor. Edge pixels clamp within the tile rather
-  // than reaching into the next one, which only affects the outermost row/
-  // column of each 256px tile.
-  const fx = point.x - tileX * 256, fy = point.y - tileY * 256;
-  const x0 = Math.min(Math.max(Math.floor(fx), 0), tile.w - 1), y0 = Math.min(Math.max(Math.floor(fy), 0), tile.h - 1);
-  const x1 = Math.min(x0 + 1, tile.w - 1), y1 = Math.min(y0 + 1, tile.h - 1);
-  const tx = fx - x0, ty = fy - y0;
-  const v00 = tile.elev[y0 * tile.w + x0];
-  if (v00 === undefined) return null;
-  const v10 = tile.elev[y0 * tile.w + x1], v01 = tile.elev[y1 * tile.w + x0], v11 = tile.elev[y1 * tile.w + x1];
-  const top = v00 + (v10 - v00) * tx, bottom = v01 + (v11 - v01) * tx;
-  return top + (bottom - top) * ty;
+  const px = Math.floor(point.x - tileX * 256), py = Math.floor(point.y - tileY * 256);
+  const v = tile.elev[py * tile.w + px];
+  return v === undefined ? null : v;
 }
 // Samples elevation at evenly-spaced points along a path of lat/lng
 // vertices, returning [{distM, elevM}, ...] with distM running from 0 to
@@ -4313,24 +4301,103 @@ function wireElevationChartHover(wrapEl, samples, widthPx, heightPx) {
    tool is about what's visible standing there, not antenna placement. */
 const EARTH_RADIUS_EFFECTIVE_M = 6371000 * 4 / 3;
 const HORIZON_EYE_HEIGHT_M = 1.8;
-const HORIZON_NUM_BEARINGS_COARSE = 60;
-const HORIZON_NUM_BEARINGS_PRECISE = 120;
-const HORIZON_SAMPLES_PER_RAY_COARSE = 32;
-const HORIZON_SAMPLES_PER_RAY_PRECISE = 48;
+const HORIZON_NUM_BEARINGS = 60;
+const HORIZON_SAMPLES_PER_RAY = 32;
 const HORIZON_MAX_RANGE_CAP_M = 80000; // safety cap — an observer on a very tall point could otherwise ask for a huge, slow-to-sample area
-// Coarse is a 1920-sample scan (60 bearings x 32 samples/ray) at the zoom-11
-// elevation lookup (~150-300m/px depending on latitude) — fast (a couple
-// seconds), plenty for "is there a hill roughly here." Precise steps up on
-// every axis that actually affects fidelity: 120 bearings (3° apart instead
-// of 6°, so the horizon panorama below reads as a real skyline instead of a
-// jagged 60-point outline), 48 samples/ray, and the zoom-15 elevation lookup
-// (~2-3m/px at this latitude) instead of zoom-11 — a ~9x larger scan (5760
-// samples), tens of seconds to a couple minutes, for when the extra detail
-// actually matters. Both tiers also read elevation via bilinear interpolation
-// now (see fetchElevationAt) rather than snapping to the nearest tile pixel.
+// A full scan is up to 1920 sample points spread over a potentially 80km-wide
+// area. At the other tools' zoom-14 elevation lookup (each tile covering
+// only ~2-3km), that meant hundreds of DISTINCT tile fetches and measured
+// 30-45+ seconds, most of it just waiting on network round-trips past the
+// browser's per-origin connection limit. Each zoom step down covers 2x the
+// linear distance per tile, so zoom 11 covers 8x more per tile (~64x fewer
+// tiles for the same area) — coarser resolution (~150-300m/px depending on
+// latitude) than zoom 14, but fast (a couple seconds). Exposed as a
+// Coarse/Precise choice rather than picking one permanently: Coarse (this
+// zoom 11, default) is plenty for "is there a hill roughly here," Precise
+// (zoom 14) resolves finer terrain detail at real cost — tens of seconds to
+// over a minute — for when that detail matters. An earlier revision also
+// pushed Precise to more bearings/samples/zoom and bilinear elevation
+// reads, but that made bad calls MORE often, not less — ground-truthed
+// (someone standing at the point saw sight lines the tool marked as
+// blocked), most likely from upsampled/interpolated DEM noise near the
+// observer getting sampled and amplified rather than smoothed out. Reverted
+// back to matching Coarse's density; Precise's real edge over Coarse is now
+// the OSM obstacle awareness below, not brute-force resampling of the same
+// noisy elevation data.
 const HORIZON_ZOOM_COARSE = 11;
-const HORIZON_ZOOM_PRECISE = 15;
+const HORIZON_ZOOM_PRECISE = 14;
 let horizonPrecise = false; // Coarse by default
+
+/* ---- OSM obstacles (Precise only): treelines/forests and buildings block
+   line of sight the way bare terrain elevation alone can't capture — two
+   patches of forest at the same apparent height hide whatever's behind them
+   just like a ridge would, and that falls straight out of the existing
+   horizon-angle algorithm once canopy/roof height is added on top of ground
+   elevation at that sample, with zero extra special-casing needed. Open
+   land (farmland, grassland, bare ground — anything NOT forest or building)
+   gets no extra height and blocks nothing, matching how those actually
+   look. One Overpass query per calculation covers the whole scan area
+   (capped — see below), then every sample point along every ray is tested
+   against the fetched polygons in plain JS; a failed/slow/rate-limited
+   Overpass call just yields zero obstacles, silently falling back to the
+   same bare-terrain behavior Coarse already has. */
+const OSM_OBSTACLE_FETCH_RADIUS_CAP_M = 20000; // keeps the Overpass query (and
+// the point-in-polygon workload after it) bounded — obstacles rarely matter
+// out at the tool's full 80km safety-cap range anyway
+const OSM_FOREST_HEIGHT_M = 18; // typical mature-canopy height; OSM wood/forest
+// polygons essentially never carry their own height tag
+const OSM_BUILDING_DEFAULT_HEIGHT_M = 6; // ~2 storeys, used when a building has
+// neither a height nor a building:levels tag
+const OSM_OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
+async function fetchHorizonObstacles(center, radiusM) {
+  const r = Math.round(Math.min(radiusM, OSM_OBSTACLE_FETCH_RADIUS_CAP_M));
+  const query = `[out:json][timeout:20];(way["natural"="wood"](around:${r},${center.lat},${center.lng});way["landuse"="forest"](around:${r},${center.lat},${center.lng});way["building"](around:${r},${center.lat},${center.lng}););out geom;`;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
+    const resp = await fetch(OSM_OVERPASS_URL, { method: 'POST', body: 'data=' + encodeURIComponent(query), signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return (data.elements || []).filter(el => el.type === 'way' && el.geometry && el.geometry.length >= 3).map(el => {
+      const tags = el.tags || {};
+      const isForest = tags.natural === 'wood' || tags.landuse === 'forest';
+      let height;
+      if (isForest) {
+        height = OSM_FOREST_HEIGHT_M;
+      } else {
+        const hTag = parseFloat(tags.height);
+        const levels = parseFloat(tags['building:levels']);
+        height = !isNaN(hTag) ? hTag : (!isNaN(levels) ? levels * 3 : OSM_BUILDING_DEFAULT_HEIGHT_M);
+      }
+      const ring = el.geometry.map(pt => [pt.lat, pt.lon]);
+      let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+      ring.forEach(([lat, lng]) => { minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat); minLng = Math.min(minLng, lng); maxLng = Math.max(maxLng, lng); });
+      return { height, ring, bbox: [minLat, maxLat, minLng, maxLng] };
+    });
+  } catch (e) { return []; } // network error/timeout/rate-limit — proceed with bare terrain only
+}
+// Standard even-odd ray-casting point-in-polygon test, with a cheap bbox
+// pre-check per obstacle so most of the thousands of sample-vs-obstacle
+// checks a full scan does bail out before ever touching the polygon itself.
+function pointInRing(lat, lng, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [latI, lngI] = ring[i], [latJ, lngJ] = ring[j];
+    const intersect = ((latI > lat) !== (latJ > lat)) && (lng < (lngJ - lngI) * (lat - latI) / (latJ - latI) + lngI);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+function obstacleHeightAt(lat, lng, obstacles) {
+  let maxH = 0;
+  for (const o of obstacles) {
+    const [minLat, maxLat, minLng, maxLng] = o.bbox;
+    if (lat < minLat || lat > maxLat || lng < minLng || lng > maxLng) continue;
+    if (pointInRing(lat, lng, o.ring)) maxH = Math.max(maxH, o.height);
+  }
+  return maxH;
+}
 
 // Great-circle destination point, distM out from latlng along bearingDeg —
 // needed to place each ray's sample points; Leaflet has no built-in for this.
@@ -4345,12 +4412,15 @@ function destinationPoint(latlng, bearingDeg, distM) {
 }
 
 let horizonMarker = null, horizonShape = null, horizonPoint = null;
+let currentHorizonEntry = null; // the entry drawHorizonResult most recently rendered — lets the map-click and panorama-click handlers find its data
+let horizonSelectedIdx = 0; // which ray's profile the second chart window is currently pinned to
 let horizonRequestId = 0;
 const horizonResultEl = document.getElementById('horizonResult');
 const horizonProgressTrack = document.getElementById('horizonProgressTrack');
 const horizonProgressFill = document.getElementById('horizonProgressFill');
 const horizonHistoryListEl = document.getElementById('horizonHistoryList');
 const horizonPanoramaWrapEl = document.getElementById('horizonPanoramaWrap');
+const horizonProfileWrapEl = document.getElementById('horizonProfileWrap');
 const btnHorizonCoarse = document.getElementById('btnHorizonCoarse');
 const btnHorizonPrecise = document.getElementById('btnHorizonPrecise');
 
@@ -4391,8 +4461,6 @@ async function computeAndDrawHorizon() {
   if (!horizonPoint) return;
   const requestId = ++horizonRequestId;
   const zoom = horizonPrecise ? HORIZON_ZOOM_PRECISE : HORIZON_ZOOM_COARSE;
-  const numBearings = horizonPrecise ? HORIZON_NUM_BEARINGS_PRECISE : HORIZON_NUM_BEARINGS_COARSE;
-  const samplesPerRay = horizonPrecise ? HORIZON_SAMPLES_PER_RAY_PRECISE : HORIZON_SAMPLES_PER_RAY_COARSE;
   horizonResultEl.textContent = horizonPrecise
     ? 'Calculating precise line of sight — this can take a while…'
     : 'Calculating line of sight…';
@@ -4406,13 +4474,13 @@ async function computeAndDrawHorizon() {
   // obstacle matters most) and progressively sparser farther out (where
   // resolving individual obstacles matters less relative to the distance).
   const rayDists = [];
-  for (let i = 1; i <= samplesPerRay; i++) {
-    const t = i / samplesPerRay;
+  for (let i = 1; i <= HORIZON_SAMPLES_PER_RAY; i++) {
+    const t = i / HORIZON_SAMPLES_PER_RAY;
     rayDists.push(maxRangeM * t * t);
   }
   const rays = [];
-  for (let b = 0; b < numBearings; b++) {
-    const bearing = (360 / numBearings) * b;
+  for (let b = 0; b < HORIZON_NUM_BEARINGS; b++) {
+    const bearing = (360 / HORIZON_NUM_BEARINGS) * b;
     rays.push({ bearing, latlngs: rayDists.map(d => destinationPoint(horizonPoint, bearing, d)) });
   }
   // Progress feedback: each sample point's own fetch resolves independently
@@ -4420,19 +4488,25 @@ async function computeAndDrawHorizon() {
   // up as each one finishes and redrawing the bar gives a live sense of how
   // much is left — the one part of "how long will this take" that's
   // actually knowable up front (total sample count), even though the
-  // per-sample time (cached vs. a real network fetch) isn't.
+  // per-sample time (cached vs. a real network fetch) isn't. The OSM
+  // obstacle fetch (Precise only) runs concurrently with this rather than
+  // before/after it, since the two are independent network calls and there's
+  // no reason to pay their latency serially.
   const allPoints = rays.flatMap(r => r.latlngs);
   let completed = 0, lastShownPct = -1;
-  const allElevs = await Promise.all(allPoints.map(p => fetchElevationAt(p, zoom).then(v => {
-    completed++;
-    const pct = Math.floor((completed / allPoints.length) * 100);
-    if (pct !== lastShownPct && requestId === horizonRequestId) {
-      lastShownPct = pct;
-      horizonProgressFill.style.width = pct + '%';
-      horizonResultEl.textContent = (horizonPrecise ? 'Calculating precise line of sight… ' : 'Calculating line of sight… ') + pct + '%';
-    }
-    return v;
-  })));
+  const [allElevs, obstacles] = await Promise.all([
+    Promise.all(allPoints.map(p => fetchElevationAt(p, zoom).then(v => {
+      completed++;
+      const pct = Math.floor((completed / allPoints.length) * 100);
+      if (pct !== lastShownPct && requestId === horizonRequestId) {
+        lastShownPct = pct;
+        horizonProgressFill.style.width = pct + '%';
+        horizonResultEl.textContent = (horizonPrecise ? 'Calculating precise line of sight… ' : 'Calculating line of sight… ') + pct + '%';
+      }
+      return v;
+    }))),
+    horizonPrecise ? fetchHorizonObstacles(horizonPoint, maxRangeM) : Promise.resolve([])
+  ]);
   if (requestId !== horizonRequestId) return;
   let idx = 0;
   const frontier = [];
@@ -4443,14 +4517,28 @@ async function computeAndDrawHorizon() {
   // runningMaxAngle the frontier distance already tracks, so it costs
   // nothing extra to record.
   const horizonAngles = [];
+  // Full per-ray distance/elevation samples, for the "profile along this one
+  // direction" chart — kept in memory only (see saveHorizonHistory), not
+  // persisted, since 60+ rays x 32 samples per calculation would otherwise
+  // bloat localStorage fast across a session's worth of history entries.
+  const raySamples = [];
   let minDist = Infinity, maxDist = 0, sumDist = 0, visibleRays = 0;
   for (const ray of rays) {
     let runningMaxAngle = -Infinity, lastVisibleDist = 0, lastVisibleLatLng = horizonPoint;
+    const samples = [];
     for (let i = 0; i < rayDists.length; i++) {
       const e = allElevs[idx++];
-      if (e === null || e === undefined) continue; // no data for this sample — skip, don't let it falsely block/pass
       const d = rayDists[i];
-      const angle = (e - (d * d) / (2 * EARTH_RADIUS_EFFECTIVE_M) - eyeAbs) / d;
+      if (e === null || e === undefined) { samples.push({ distM: d, elevM: null, latlng: ray.latlngs[i] }); continue; } // no data — skip, don't let it falsely block/pass
+      // Obstacle height (forest canopy / building roof, 0 over open land) is
+      // added straight onto ground elevation before the visibility test, so
+      // a same-height treeline further along a ray that's already blocked
+      // by a closer one stays blocked too — no special-casing needed beyond
+      // treating canopy/roof as if it were solid terrain at that height.
+      const obsH = obstacles.length ? obstacleHeightAt(ray.latlngs[i].lat, ray.latlngs[i].lng, obstacles) : 0;
+      const effE = e + obsH;
+      samples.push({ distM: d, elevM: effE, latlng: ray.latlngs[i] });
+      const angle = (effE - (d * d) / (2 * EARTH_RADIUS_EFFECTIVE_M) - eyeAbs) / d;
       if (angle >= runningMaxAngle) {
         runningMaxAngle = angle;
         lastVisibleDist = d;
@@ -4459,6 +4547,7 @@ async function computeAndDrawHorizon() {
     }
     frontier.push(lastVisibleLatLng);
     horizonAngles.push({ bearing: ray.bearing, angleDeg: runningMaxAngle === -Infinity ? null : Math.atan(runningMaxAngle) * 180 / Math.PI });
+    raySamples.push(samples);
     if (lastVisibleDist > 0) {
       minDist = Math.min(minDist, lastVisibleDist);
       maxDist = Math.max(maxDist, lastVisibleDist);
@@ -4467,7 +4556,7 @@ async function computeAndDrawHorizon() {
     }
   }
   const entry = {
-    point: horizonPoint, precise: horizonPrecise, frontier, horizonAngles, groundElev,
+    point: horizonPoint, precise: horizonPrecise, frontier, horizonAngles, raySamples, groundElev,
     minDist: minDist === Infinity ? 0 : minDist, maxDist,
     avgDist: visibleRays ? sumDist / visibleRays : 0
   };
@@ -4487,31 +4576,43 @@ function formatBearingCompass(deg) {
   const dirs = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
   return `${dirs[Math.round(deg / 22.5) % 16]} ${Math.round(deg)}°`;
 }
+// Y-axis floors at 0° (flat/level) rather than auto-scaling down to
+// whatever negative angle the data reaches — anything below eye-level
+// ("what's under the horizon," looking down into a valley) isn't what this
+// panorama is for, so those points just draw pinned to the baseline instead
+// of pulling the whole chart's scale down to show them.
+const HORIZON_PANORAMA_PAD = { L: 26, R: 8, T: 8, B: 16 };
+function horizonPanoramaGeometry(horizonAngles, widthPx, heightPx) {
+  const angles = horizonAngles.filter(a => a.angleDeg !== null).map(a => a.angleDeg);
+  const maxA = Math.max(...angles, 0.5);
+  const span = Math.max(maxA, 1);
+  const { L: padL, R: padR, T: padT, B: padB } = HORIZON_PANORAMA_PAD;
+  const w = widthPx - padL - padR, h = heightPx - padT - padB;
+  return {
+    padL, padT, w, h, maxA,
+    xOf: (bearing) => padL + (bearing / 360) * w,
+    yOf: (angleDeg) => padT + h - (Math.max(angleDeg, 0) / span) * h
+  };
+}
 function buildHorizonPanoramaSvg(horizonAngles, widthPx, heightPx) {
   const valid = horizonAngles.filter(a => a.angleDeg !== null);
   if (valid.length < 2) return '<div style="font-size:11px;color:var(--sub);padding:6px 0;">Not enough terrain data for a panorama.</div>';
-  const angles = valid.map(a => a.angleDeg);
-  const maxA = Math.max(...angles, 0.5), minA = Math.min(...angles, -0.5);
-  const span = Math.max(maxA - minA, 1);
-  const padL = 26, padR = 8, padT = 8, padB = 16;
-  const w = widthPx - padL - padR, h = heightPx - padT - padB;
-  const toXY = (a) => [padL + (a.bearing / 360) * w, padT + h - ((a.angleDeg - minA) / span) * h];
+  const geo = horizonPanoramaGeometry(horizonAngles, widthPx, heightPx);
+  const { padL, padT, w, h, maxA } = geo;
   let pathD = '', started = false;
   horizonAngles.forEach(a => {
     if (a.angleDeg === null) { started = false; return; }
-    const [x, y] = toXY(a);
+    const x = geo.xOf(a.bearing), y = geo.yOf(a.angleDeg);
     pathD += (started ? ' L' : ' M') + x.toFixed(1) + ',' + y.toFixed(1);
     started = true;
   });
   const areaD = pathD + ` L${(padL + w).toFixed(1)},${(padT + h).toFixed(1)} L${padL.toFixed(1)},${(padT + h).toFixed(1)} Z`;
-  const showZeroLine = minA <= 0 && maxA >= 0;
-  const zeroY = padT + h - ((0 - minA) / span) * h;
   const dirTicks = [
     { deg: 0, label: 'N' }, { deg: 45, label: 'NE' }, { deg: 90, label: 'E' }, { deg: 135, label: 'SE' },
     { deg: 180, label: 'S' }, { deg: 225, label: 'SW' }, { deg: 270, label: 'W' }, { deg: 315, label: 'NW' }
   ];
   const ticksSvg = dirTicks.map(t => {
-    const x = (padL + (t.deg / 360) * w).toFixed(1);
+    const x = geo.xOf(t.deg).toFixed(1);
     const major = t.deg % 90 === 0;
     return `<line x1="${x}" y1="${padT}" x2="${x}" y2="${padT + h}" stroke="var(--border)" stroke-width="1" stroke-dasharray="${major ? '0' : '2 3'}" opacity="${major ? '0.7' : '0.35'}"/>
     <text x="${x}" y="${heightPx - 3}" font-size="9" fill="${major ? 'var(--text)' : 'var(--sub)'}" text-anchor="middle">${t.label}</text>`;
@@ -4519,87 +4620,148 @@ function buildHorizonPanoramaSvg(horizonAngles, widthPx, heightPx) {
   return `<svg viewBox="0 0 ${widthPx} ${heightPx}" width="100%" height="${heightPx}" preserveAspectRatio="none" style="display:block;cursor:crosshair;">
     <rect x="${padL}" y="${padT}" width="${w}" height="${h}" fill="#ff9e4a08"/>
     ${ticksSvg}
-    ${showZeroLine ? `<line x1="${padL}" y1="${zeroY.toFixed(1)}" x2="${padL + w}" y2="${zeroY.toFixed(1)}" stroke="var(--sub)" stroke-width="1" stroke-dasharray="3 2" opacity="0.6"/>` : ''}
     <path d="${areaD}" fill="#ff9e4a" fill-opacity="0.22" stroke="none"/>
     <path d="${pathD}" fill="none" stroke="#ff9e4a" stroke-width="1.6"/>
-    <text x="2" y="${padT + 8}" font-size="9" fill="var(--sub)">${maxA >= 0 ? '+' : ''}${maxA.toFixed(1)}°</text>
-    <text x="2" y="${padT + h}" font-size="9" fill="var(--sub)">${minA >= 0 ? '+' : ''}${minA.toFixed(1)}°</text>
+    <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT + h}" stroke="var(--border)" stroke-width="1"/>
+    <line x1="${padL}" y1="${padT + h}" x2="${padL + w}" y2="${padT + h}" stroke="var(--border)" stroke-width="1"/>
+    <text x="2" y="${padT + 8}" font-size="9" fill="var(--sub)">+${maxA.toFixed(1)}°</text>
+    <text x="2" y="${padT + h}" font-size="9" fill="var(--sub)">0.0°</text>
     <line class="chart-hover-line" x1="0" y1="${padT}" x2="0" y2="${padT + h}" stroke="var(--text)" stroke-width="1" stroke-dasharray="3 2" opacity="0" pointer-events="none"/>
     <circle class="chart-hover-dot" r="4.5" fill="#ff9e4a" stroke="var(--bg)" stroke-width="2" opacity="0" pointer-events="none"/>
   </svg>
   <div class="elev-chart-hover-stat" style="font-size:10.5px;color:var(--text);min-height:14px;">&nbsp;</div>`;
 }
-// Wires the panorama's hover readout the same way wireElevationChartHover
-// does for the route/elevation chart — plus, since each bearing's own
-// frontier point is right there on the entry, dropping a marker on the real
-// map at whatever direction the mouse is over, so "that bump in the
-// skyline" and "that spot on the ground" stay connected the same way they
-// already do for the route elevation profile.
+// Wires the panorama's hover readout (mousemove — temporary preview, reverts
+// to the pinned bearing on mouseleave) and click (permanent pin — updates
+// horizonSelectedIdx and drives the profile chart below it). Also drops a
+// marker on the real map at whatever direction is currently showing, so
+// "that bump in the skyline" and "that spot on the ground" stay connected,
+// the same way the route elevation profile's hover already does.
 function wireHorizonPanoramaHover(wrapEl, entry, widthPx, heightPx) {
   const svg = wrapEl.querySelector('svg');
   if (!svg) return;
-  hideChartHoverMapMarker();
   const horizonAngles = entry.horizonAngles;
   const valid = horizonAngles.filter(a => a.angleDeg !== null);
   if (valid.length < 2) return;
-  const angles = valid.map(a => a.angleDeg);
-  const maxA = Math.max(...angles, 0.5), minA = Math.min(...angles, -0.5);
-  const span = Math.max(maxA - minA, 1);
-  const padL = 26, padR = 8, padT = 8, padB = 16;
-  const w = widthPx - padL - padR, h = heightPx - padT - padB;
+  const geo = horizonPanoramaGeometry(horizonAngles, widthPx, heightPx);
+  const { padL, padT, w, h } = geo;
   const hoverLine = svg.querySelector('.chart-hover-line');
   const hoverDot = svg.querySelector('.chart-hover-dot');
   const statEl = wrapEl.querySelector('.elev-chart-hover-stat');
-  function update(clientX) {
+  function idxFromClientX(clientX) {
     const rect = svg.getBoundingClientRect();
-    if (!rect.width) return;
+    if (!rect.width) return null;
     const xPx = (clientX - rect.left) * (widthPx / rect.width);
     const frac = Math.min(1, Math.max(0, (xPx - padL) / w));
-    const idx = Math.round(frac * (horizonAngles.length - 1));
+    return Math.round(frac * (horizonAngles.length - 1));
+  }
+  function showAt(idx) {
     const a = horizonAngles[idx];
-    if (!a || a.angleDeg === null) { hide(); return; }
-    const x = padL + frac * w;
-    const y = padT + h - ((a.angleDeg - minA) / span) * h;
+    if (!a || a.angleDeg === null) return false;
+    const x = geo.xOf(a.bearing), y = geo.yOf(a.angleDeg);
     hoverLine.setAttribute('x1', x); hoverLine.setAttribute('x2', x); hoverLine.setAttribute('opacity', '0.6');
     hoverDot.setAttribute('cx', x); hoverDot.setAttribute('cy', y); hoverDot.setAttribute('opacity', '1');
     statEl.innerHTML = `${formatBearingCompass(a.bearing)} <b style="color:#ff9e4a;">${a.angleDeg >= 0 ? '+' : ''}${a.angleDeg.toFixed(1)}°</b>`;
     if (entry.frontier[idx]) showChartHoverMapMarker(entry.frontier[idx]);
+    return true;
   }
-  function hide() {
-    hoverLine.setAttribute('opacity', '0');
-    hoverDot.setAttribute('opacity', '0');
-    statEl.innerHTML = '&nbsp;';
-    hideChartHoverMapMarker();
+  function revertToPin() {
+    if (!showAt(horizonSelectedIdx)) {
+      hoverLine.setAttribute('opacity', '0');
+      hoverDot.setAttribute('opacity', '0');
+      statEl.innerHTML = '&nbsp;';
+      hideChartHoverMapMarker();
+    }
   }
-  svg.addEventListener('mousemove', (e) => update(e.clientX));
-  svg.addEventListener('mouseleave', hide);
-  svg.addEventListener('touchstart', (e) => { if (e.touches[0]) update(e.touches[0].clientX); }, { passive: true });
-  svg.addEventListener('touchmove', (e) => { if (e.touches[0]) update(e.touches[0].clientX); }, { passive: true });
-  svg.addEventListener('touchend', hide);
+  function move(clientX) {
+    const idx = idxFromClientX(clientX);
+    if (idx === null) return;
+    showAt(idx);
+  }
+  function click(clientX) {
+    const idx = idxFromClientX(clientX);
+    if (idx === null) return;
+    selectHorizonBearing(entry, idx);
+  }
+  svg.addEventListener('mousemove', (e) => move(e.clientX));
+  svg.addEventListener('mouseleave', revertToPin);
+  svg.addEventListener('click', (e) => click(e.clientX));
+  svg.addEventListener('touchstart', (e) => { if (e.touches[0]) move(e.touches[0].clientX); }, { passive: true });
+  svg.addEventListener('touchmove', (e) => { if (e.touches[0]) move(e.touches[0].clientX); }, { passive: true });
+  svg.addEventListener('touchend', (e) => { if (e.changedTouches[0]) click(e.changedTouches[0].clientX); });
+  revertToPin(); // show the current pin (or nothing, on a fresh entry) rather than starting blank
+}
+// Initial bearing from `from` to `to`, standard great-circle formula.
+function bearingBetween(from, to) {
+  const lat1 = from.lat * Math.PI / 180, lat2 = to.lat * Math.PI / 180;
+  const dLng = (to.lng - from.lng) * Math.PI / 180;
+  const y = Math.sin(dLng) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+function nearestHorizonRayIndex(entry, bearing) {
+  let best = 0, bestDiff = Infinity;
+  entry.horizonAngles.forEach((a, i) => {
+    const diff = Math.abs(((a.bearing - bearing + 540) % 360) - 180);
+    if (diff < bestDiff) { bestDiff = diff; best = i; }
+  });
+  return best;
+}
+// Distance/elevation profile along one ray — heywhatsthat's own "path
+// profile" style, reusing the exact same chart builder the Route tool's
+// elevation profile already uses (metric by default, same hover behavior),
+// just fed this ray's samples instead of a route's.
+function renderHorizonProfile(entry, idx) {
+  const a = entry.horizonAngles[idx];
+  const label = a ? formatBearingCompass(a.bearing) : '';
+  if (!entry.raySamples || !entry.raySamples[idx] || !entry.raySamples[idx].length) {
+    horizonProfileWrapEl.innerHTML = `<div class="micro-label">Profile — ${label}</div><div style="font-size:11px;color:var(--sub);padding:6px 0;">Not available for this entry — recalculate to see it.</div>`;
+    return;
+  }
+  horizonProfileWrapEl.innerHTML = `<div class="micro-label">Profile — ${label}</div>` + buildElevationChartSvg(entry.raySamples[idx], 420, 110);
+  wireElevationChartHover(horizonProfileWrapEl, entry.raySamples[idx], 420, 110);
+}
+// Pins a bearing as "selected" — updates the panorama's guide line, the
+// profile chart, and (since this is called from a real click, not just a
+// hover) leaves a marker on the map at the point that was actually clicked.
+function selectHorizonBearing(entry, idx, mapClickLatLng) {
+  horizonSelectedIdx = idx;
+  const svg = horizonPanoramaWrapEl.querySelector('svg');
+  if (svg) wireHorizonPanoramaHover(horizonPanoramaWrapEl, entry, 420, 96);
+  renderHorizonProfile(entry, idx);
+  if (mapClickLatLng) showChartHoverMapMarker(mapClickLatLng);
 }
 // Draws a result (fresh or from history) without touching the network —
 // everything it needs is already on the entry object.
 function drawHorizonResult(entry) {
   horizonPoint = entry.point;
+  currentHorizonEntry = entry;
+  horizonSelectedIdx = 0;
   if (horizonMarker) map.removeLayer(horizonMarker);
   if (horizonShape) map.removeLayer(horizonShape);
-  // interactive:false on both — they're purely visual (redrawn on top of
-  // everything, including history dots, every time). Without this they
-  // swallow clicks meant for whatever's underneath: clicking a history dot
-  // that happened to fall inside the currently-displayed frontier polygon
-  // hit the polygon instead (its fill is faint, not literally invisible to
-  // hit-testing), which bubbled to the map's own click handler and started
-  // a brand new calculation right next to the dot instead of revisiting it.
   horizonMarker = L.circleMarker(entry.point, { radius: 5, color: '#ff9e4a', weight: 2, fillOpacity: 1, fillColor: '#12151a', interactive: false }).addTo(map);
-  horizonShape = L.polygon(entry.frontier, { color: '#ff9e4a', weight: 2, fillOpacity: 0.05, dashArray: '5 5', interactive: false }).addTo(map);
+  // Interactive (unlike the marker above) so clicking inside the visible
+  // area can select a bearing to inspect (see below) instead of only ever
+  // starting a brand new calculation there. A history dot's own click
+  // handler already calls stopPropagation, so a dot sitting inside the
+  // polygon still takes priority over the polygon's own handler.
+  horizonShape = L.polygon(entry.frontier, { color: '#ff9e4a', weight: 2, fillOpacity: 0.05, dashArray: '5 5' }).addTo(map);
+  horizonShape.on('click', (e) => {
+    L.DomEvent.stopPropagation(e);
+    if (!currentHorizonEntry) return;
+    const bearing = bearingBetween(currentHorizonEntry.point, e.latlng);
+    selectHorizonBearing(currentHorizonEntry, nearestHorizonRayIndex(currentHorizonEntry, bearing), e.latlng);
+  });
   horizonProgressTrack.style.display = 'none';
   const elevText = entry.groundElev === null ? 'unknown ground' : Math.round(entry.groundElev) + 'm ground';
   horizonResultEl.innerHTML = `Line of sight <b style="color:var(--good);">${formatDistance(entry.minDist)}–${formatDistance(entry.maxDist)}</b>, ${formatDistance(entry.avgDist)} avg (${elevText}, ${HORIZON_EYE_HEIGHT_M}m eye)${entry.precise ? ' · precise' : ''}`;
   if (entry.horizonAngles && entry.horizonAngles.length) {
-    horizonPanoramaWrapEl.innerHTML = `<div class="micro-label">Horizon panorama</div>` + buildHorizonPanoramaSvg(entry.horizonAngles, 420, 96);
+    horizonPanoramaWrapEl.innerHTML = `<div class="micro-label">Horizon panorama — click a direction to inspect it</div>` + buildHorizonPanoramaSvg(entry.horizonAngles, 420, 96);
     wireHorizonPanoramaHover(horizonPanoramaWrapEl, entry, 420, 96);
+    renderHorizonProfile(entry, horizonSelectedIdx);
   } else {
     horizonPanoramaWrapEl.innerHTML = ''; // older history entry saved before the panorama existed
+    horizonProfileWrapEl.innerHTML = '';
   }
 }
 function addHorizonHistoryEntry(entry) {
@@ -4644,7 +4806,8 @@ function loadHorizonHistoryFromStorage() {
       minDist: h.minDist, maxDist: h.maxDist, avgDist: h.avgDist,
       point: L.latLng(h.point.lat, h.point.lng),
       frontier: h.frontier.map(p => L.latLng(p.lat, p.lng)),
-      horizonAngles: h.horizonAngles || []
+      horizonAngles: h.horizonAngles || [],
+      raySamples: [] // not persisted (see saveHorizonHistory) — the profile chart falls back to "recalculate to see this"
     };
     entry.dotMarker = L.circleMarker(entry.point, { radius: 4, color: '#ff9e4a', weight: 1.5, fillOpacity: 0.6, fillColor: '#ff9e4a' })
       .addTo(horizonHistoryLayerGroup)
@@ -4680,6 +4843,8 @@ function renderHorizonHistoryList() {
 // click shouldn't be able to trigger by itself.
 function horizonClear() {
   horizonPoint = null;
+  currentHorizonEntry = null;
+  horizonSelectedIdx = 0;
   horizonActiveHistoryId = null;
   horizonRequestId++; // invalidates any in-flight calculation
   if (horizonMarker) { map.removeLayer(horizonMarker); horizonMarker = null; }
@@ -4687,6 +4852,7 @@ function horizonClear() {
   horizonProgressTrack.style.display = 'none';
   horizonResultEl.textContent = 'Click a point on the map';
   horizonPanoramaWrapEl.innerHTML = '';
+  horizonProfileWrapEl.innerHTML = '';
   hideChartHoverMapMarker();
   renderHorizonHistoryList();
 }
