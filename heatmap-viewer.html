@@ -352,6 +352,7 @@
     background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 4px 14px #0007;
     padding:10px 12px;font-size:12.5px;flex-direction:column;gap:6px;
     width:min(420px,calc(100vw - 28px));
+    max-height:calc(100vh - 90px);overflow-y:auto;
   }
   #horizonPanel{
     position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:1200;display:none;
@@ -562,7 +563,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v6.9</span>
+      <span class="version-tag">v7.0</span>
     </div>
   </div>
 </div>
@@ -653,10 +654,29 @@
     <div class="route-mode-row">
       <button id="btnRouteCar" class="small active-toggle"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="10" width="18" height="6" rx="1.5"/><circle cx="7.5" cy="17" r="1.8"/><circle cx="16.5" cy="17" r="1.8"/></svg> Car</button>
       <button id="btnRouteFoot" class="small"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2.2"/><path d="M12 8v5l-3 8"/><path d="M12 13l3.5 7.5"/></svg> Foot</button>
+      <button id="btnRouteSolve" class="small" title="Solve a foot route that stays under cover (treelines, forests, urban areas) instead of a straight line — same distance/time/elevation calculation as Foot, just routed through cover."><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7l9 5 9-5-9-5Z"/><path d="M3 12l9 5 9-5"/></svg> Solve</button>
     </div>
     <button id="btnRouteClear" class="small"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg> Clear</button>
   </div>
+  <div id="routeSolveOptions" style="display:none;flex-direction:column;gap:6px;">
+    <div class="micro-label">Under-cover route — max obstacle crossings (blank = no limit)</div>
+    <label style="display:flex;align-items:center;gap:6px;font-size:11.5px;">
+      <input type="checkbox" id="chkRouteAvoidAllObstacles"> Avoid all fortifications entirely
+    </label>
+    <div id="routeObstacleBudgetRow" style="display:flex;gap:6px;">
+      <label style="flex:1;font-size:10.5px;color:var(--sub);">Ditches<br/><input type="number" min="0" id="routeMaxDitches" class="panel-height-input" style="width:100%;" placeholder="∞"></label>
+      <label style="flex:1;font-size:10.5px;color:var(--sub);">Teeth<br/><input type="number" min="0" id="routeMaxTeeth" class="panel-height-input" style="width:100%;" placeholder="∞"></label>
+      <label style="flex:1;font-size:10.5px;color:var(--sub);">Wire<br/><input type="number" min="0" id="routeMaxWire" class="panel-height-input" style="width:100%;" placeholder="∞"></label>
+    </div>
+    <div class="draw-actions-row">
+      <button id="btnRoutePlaceAvoid" class="small" title="Click points on the map the route must stay away from"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><line x1="8" y1="8" x2="16" y2="16"/><line x1="16" y1="8" x2="8" y2="16"/></svg> Place avoid points</button>
+      <button id="btnRouteAvoidClear" class="small" title="Remove all placed avoid points">Clear avoid points</button>
+    </div>
+    <span class="panel-stat" id="routeAvoidCount" style="font-size:10.5px;color:var(--sub);"></span>
+    <button id="btnRouteSolveGo" class="primary" style="width:100%;">Solve route</button>
+  </div>
   <div class="panel-stat" id="routeStats">Click points on the map to build a route (2+)</div>
+  <div class="horizon-progress-track" id="routeSolveProgressTrack"><div class="horizon-progress-fill" id="routeSolveProgressFill"></div></div>
   <div class="elev-chart-svg-wrap" id="routeElevWrap"></div>
 </div>
 
@@ -5107,7 +5127,7 @@ document.getElementById('btnHorizonClear').addEventListener('click', () => {
   }, 'Clear');
 });
 
-/* ---------------- Route & Elevation planning (car/foot, multi-vertex) ----------------
+/* ---------------- Route & Elevation planning (car/foot/solve, multi-vertex) ----------------
    Click as many points as you like to build a route through them, in order
    (A→B→C→…), recomputed after every new point — Clear starts a fresh route.
    Car keeps following real roads via Valhalla's free public routing instance
@@ -5116,19 +5136,29 @@ document.getElementById('btnHorizonClear').addEventListener('click', () => {
    number of waypoints as one multi-leg trip. Foot is instead a straight line
    segment-by-segment between the clicked points — no road network to follow
    on foot in this context, so distance/time come from great-circle-ish
-   planar distance and an assumed walking pace, not a routed path. The
-   elevation profile is this file's own doing either way, sampled along
-   whichever geometry is actually shown (routed shape for car, straight
-   segments for foot) with the same lookup the other tools here use, not
-   anything Valhalla provides. */
+   planar distance and an assumed walking pace, not a routed path. Solve is
+   a THIRD foot option (see the route solver block further down) — same
+   distance/ETA/elevation math as Foot, but the geometry is a winding path
+   an A* search finds through OSM cover (forest/treeline/urban) instead of
+   a straight line, unlike Foot/Car it's opt-in per click (Solve route
+   button) rather than recomputed on every point add, since a solve is a
+   real (if bounded) search, not a formula. The elevation profile is this
+   file's own doing either way, sampled along whichever geometry is
+   actually shown (routed shape for car, straight/solved segments for foot)
+   with the same lookup the other tools here use, not anything Valhalla
+   provides. */
 let routePoints = [];
-let routeProfile = 'auto'; // 'auto' (car, routed) | 'foot' (straight line)
+let routeProfile = 'auto'; // 'auto' (car, routed) | 'foot' (straight line) | 'solve' (foot, routed through cover)
 const WALK_SPEED_KMH = 5;
 const routeLayerGroup = L.layerGroup().addTo(map);
 const routeStatsEl = document.getElementById('routeStats');
 const routeElevWrapEl = document.getElementById('routeElevWrap');
 const btnRouteCar = document.getElementById('btnRouteCar');
 const btnRouteFoot = document.getElementById('btnRouteFoot');
+const btnRouteSolve = document.getElementById('btnRouteSolve');
+const routeSolveOptionsEl = document.getElementById('routeSolveOptions');
+const routeSolveProgressTrack = document.getElementById('routeSolveProgressTrack');
+const routeSolveProgressFill = document.getElementById('routeSolveProgressFill');
 
 function formatDuration(sec) {
   const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
@@ -5155,10 +5185,13 @@ function routeSetProfile(p) {
   routeProfile = p;
   btnRouteCar.classList.toggle('active-toggle', p === 'auto');
   btnRouteFoot.classList.toggle('active-toggle', p === 'foot');
+  btnRouteSolve.classList.toggle('active-toggle', p === 'solve');
+  routeSolveOptionsEl.style.display = p === 'solve' ? 'flex' : 'none';
   if (routePoints.length >= 2) computeRoute();
 }
 btnRouteCar.addEventListener('click', () => routeSetProfile('auto'));
 btnRouteFoot.addEventListener('click', () => routeSetProfile('foot'));
+btnRouteSolve.addEventListener('click', () => routeSetProfile('solve'));
 
 function routeAddPoint(latlng) {
   routePoints.push(latlng);
@@ -5190,6 +5223,18 @@ async function computeRoute() {
     if (requestId !== routeRequestId) return;
     routeElevWrapEl.innerHTML = buildElevationChartSvg(samples, 380, 130);
     wireElevationChartHover(routeElevWrapEl, samples, 380, 130);
+    return;
+  }
+  if (routeProfile === 'solve') {
+    // Deliberately NOT auto-run on every point add — a solve is a real
+    // (bounded but not free) search, potentially seconds long once an OSM
+    // cover fetch is involved, unlike Foot/Car's instant formula/API call.
+    // Adding a point just redraws markers and waits for the explicit
+    // "Solve route" button (see routeSolverGo below).
+    redrawRouteMarkers();
+    routeStatsEl.textContent = routePoints.length >= 2
+      ? `${routePoints.length} points placed — click "Solve route" when ready`
+      : 'Click at least one more point';
     return;
   }
   routeStatsEl.textContent = 'Routing…';
@@ -5227,13 +5272,417 @@ async function computeRoute() {
 }
 function routeClear() {
   routePoints = [];
+  routeAvoidPoints = [];
+  routeAvoidMarkersGroup.clearLayers();
+  routePlacingAvoidPoints = false;
+  document.getElementById('btnRoutePlaceAvoid').classList.remove('active-toggle');
+  updateRouteAvoidCountLabel();
   routeLayerGroup.clearLayers();
   routeStatsEl.textContent = 'Click points on the map to build a route (2+)';
   routeElevWrapEl.innerHTML = '';
+  routeSolveProgressTrack.style.display = 'none';
   hideChartHoverMapMarker();
 }
-map.on('click', (e) => { if (toolMode === 'route') routeAddPoint(e.latlng); });
+map.on('click', (e) => {
+  if (toolMode !== 'route') return;
+  if (routePlacingAvoidPoints) { routeAvoidPoints.push(e.latlng); redrawRouteAvoidMarkers(); updateRouteAvoidCountLabel(); return; }
+  routeAddPoint(e.latlng);
+});
 document.getElementById('btnRouteClear').addEventListener('click', routeClear);
+
+/* ---------------- Route solver: foot route that stays under cover ----------------
+   A* over a local grid, per leg, biased heavily toward cells inside
+   OSM-fetched cover polygons (forest/treeline/urban) and away from open
+   ground — the grid is scoped to a corridor around the leg (padded by a
+   fraction of its length, capped), not the whole map, so this stays fast
+   regardless of how far apart the two points are. Fortification crossings
+   (ditches/teeth/wire) are free/untracked unless the user sets an explicit
+   max for that type, at which point crossing it is a HARD constraint in
+   the search (state = grid cell + how many of each budgeted type crossed
+   so far, capped by the budget) rather than just an extra cost — matching
+   "max 2 lines of wire" meaning literally at most 2, not "prefer fewer."
+   User-placed avoid points are also hard: any grid cell within
+   ROUTE_SOLVE_AVOID_POINT_RADIUS_M of one is removed from the graph
+   entirely. Distance/ETA/elevation reuse Foot mode's own formulas/pipeline
+   unchanged — only the path geometry differs. */
+const ROUTE_SOLVE_GRID_CELL_TARGET_M = 25; // nominal cell size; coarsened for a long leg so total cells stay bounded (see ROUTE_SOLVE_MAX_GRID_CELLS)
+const ROUTE_SOLVE_MAX_GRID_CELLS = 45000;
+const ROUTE_SOLVE_CORRIDOR_PAD_FRAC = 0.35; // how far sideways of the straight line the search corridor extends, as a fraction of leg length
+const ROUTE_SOLVE_CORRIDOR_PAD_MIN_M = 250, ROUTE_SOLVE_CORRIDOR_PAD_MAX_M = 2500;
+const ROUTE_SOLVE_OPEN_COST_MULT = 6; // how much more expensive open ground is per meter than cover — the actual "prefer cover" lever
+const ROUTE_SOLVE_AVOID_POINT_RADIUS_M = 40;
+const ROUTE_SOLVE_MAX_ITER = 300000; // safety cap so a pathological leg (e.g. an avoid point sealing off the only way through) fails fast instead of hanging
+let routeAvoidPoints = []; // [L.LatLng], user-placed "must stay away from" points
+let routePlacingAvoidPoints = false;
+const routeAvoidMarkersGroup = L.layerGroup().addTo(map);
+
+function redrawRouteAvoidMarkers() {
+  routeAvoidMarkersGroup.clearLayers();
+  routeAvoidPoints.forEach((p, i) => {
+    L.circleMarker(p, { radius: 6, color: '#e0526a', weight: 2, fillOpacity: 0.9, fillColor: '#e0526a' })
+      .addTo(routeAvoidMarkersGroup)
+      .on('click', (e) => { L.DomEvent.stopPropagation(e); routeAvoidPoints.splice(i, 1); redrawRouteAvoidMarkers(); updateRouteAvoidCountLabel(); });
+  });
+}
+function updateRouteAvoidCountLabel() {
+  const el = document.getElementById('routeAvoidCount');
+  el.textContent = routeAvoidPoints.length
+    ? `${routeAvoidPoints.length} avoid point${routeAvoidPoints.length === 1 ? '' : 's'} placed — click one to remove it`
+    : '';
+}
+document.getElementById('btnRoutePlaceAvoid').addEventListener('click', () => {
+  routePlacingAvoidPoints = !routePlacingAvoidPoints;
+  document.getElementById('btnRoutePlaceAvoid').classList.toggle('active-toggle', routePlacingAvoidPoints);
+});
+document.getElementById('btnRouteAvoidClear').addEventListener('click', () => {
+  routeAvoidPoints = [];
+  redrawRouteAvoidMarkers();
+  updateRouteAvoidCountLabel();
+});
+document.getElementById('chkRouteAvoidAllObstacles').addEventListener('change', (e) => {
+  document.getElementById('routeObstacleBudgetRow').style.opacity = e.target.checked ? '0.4' : '1';
+  document.getElementById('routeObstacleBudgetRow').querySelectorAll('input').forEach(inp => inp.disabled = e.target.checked);
+});
+function readRouteObstacleBudgets() {
+  if (document.getElementById('chkRouteAvoidAllObstacles').checked) return { ditches: 0, teeth: 0, wire: 0 };
+  const parse = (id) => {
+    const v = document.getElementById(id).value.trim();
+    return v === '' ? null : Math.max(0, parseInt(v, 10) || 0);
+  };
+  return { ditches: parse('routeMaxDitches'), teeth: parse('routeMaxTeeth'), wire: parse('routeMaxWire') };
+}
+
+// Overpass, bbox-scoped to the route's own corridor (not the whole
+// country) — "cover" = forest/treeline (natural=wood, landuse=forest) or
+// urban (landuse=residential/commercial/industrial, a coarser but much
+// cheaper proxy for "built-up area" than querying every building
+// footprint individually).
+async function fetchRouteCoverPolygons(bounds) {
+  const s = bounds.getSouth(), w = bounds.getWest(), n = bounds.getNorth(), e = bounds.getEast();
+  const bbox = `${s},${w},${n},${e}`;
+  const query = `[out:json][timeout:25];(way["natural"="wood"](${bbox});way["landuse"="forest"](${bbox});way["landuse"="residential"](${bbox});way["landuse"="commercial"](${bbox});way["landuse"="industrial"](${bbox}););out geom;`;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 20000);
+    const resp = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: 'data=' + encodeURIComponent(query), signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return (data.elements || []).filter(el => el.type === 'way' && el.geometry && el.geometry.length >= 3).map(el => {
+      const ring = el.geometry.map(pt => [pt.lat, pt.lon]);
+      let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+      ring.forEach(([lat, lng]) => { minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat); minLng = Math.min(minLng, lng); maxLng = Math.max(maxLng, lng); });
+      return { ring, bbox: [minLat, maxLat, minLng, maxLng] };
+    });
+  } catch (e) { return []; } // Overpass down/slow/rate-limited — solver falls back to treating everything as open ground rather than blocking
+}
+// Standard even-odd ray-casting point-in-polygon test, bbox pre-filtered —
+// same technique as the horizon tool's own (now-removed) obstacle check.
+function pointInRouteCover(lat, lng, polygons) {
+  for (const p of polygons) {
+    const [minLat, maxLat, minLng, maxLng] = p.bbox;
+    if (lat < minLat || lat > maxLat || lng < minLng || lng > maxLng) continue;
+    let inside = false;
+    const ring = p.ring;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const [latI, lngI] = ring[i], [latJ, lngJ] = ring[j];
+      const intersect = ((latI > lat) !== (latJ > lat)) && (lng < (lngJ - lngI) * (lat - latI) / (latJ - latI) + lngI);
+      if (intersect) inside = !inside;
+    }
+    if (inside) return true;
+  }
+  return false;
+}
+
+// Fortification line segments, for the obstacle-crossing budgets — reuses
+// FORTIFICATIONS' already-loaded Leaflet layer (see the fortification
+// overlay block above) if the user's already toggled it on, since
+// ditches.geojson alone is ~11MB and re-downloading it here would be
+// wasteful; otherwise fetches it fresh (only for a type the user actually
+// budgeted, so this cost is opt-in, not paid by every solve). Cached for
+// the rest of the session either way.
+let routeSolveFortRawCache = {};
+async function fetchRouteFortSegments(key) {
+  if (routeSolveFortRawCache[key]) return routeSolveFortRawCache[key];
+  const segs = [];
+  if (FORTIFICATIONS[key].group) {
+    FORTIFICATIONS[key].group.eachLayer(l => {
+      if (!l.getLatLngs) return; // circle markers (Point features) aren't lines to cross
+      const ll = l.getLatLngs();
+      const flat = Array.isArray(ll[0]) ? ll.flat(2) : ll;
+      for (let i = 1; i < flat.length; i++) segs.push([[flat[i - 1].lat, flat[i - 1].lng], [flat[i].lat, flat[i].lng]]);
+    });
+  } else {
+    try {
+      const resp = await fetch(FORTIFICATIONS[key].file);
+      if (resp.ok) {
+        const geo = await resp.json();
+        (geo.features || []).forEach(f => {
+          const geom = f.geometry;
+          if (!geom) return;
+          const lines = geom.type === 'LineString' ? [geom.coordinates] : geom.type === 'MultiLineString' ? geom.coordinates : [];
+          lines.forEach(coords => { for (let i = 1; i < coords.length; i++) segs.push([[coords[i - 1][1], coords[i - 1][0]], [coords[i][1], coords[i][0]]]); });
+        });
+      }
+    } catch (e) {} // fetch failed — proceed with zero segments for this type rather than blocking the whole solve
+  }
+  routeSolveFortRawCache[key] = segs;
+  return segs;
+}
+function filterSegmentsToBBox(segs, bounds) {
+  const s = bounds.getSouth(), w = bounds.getWest(), n = bounds.getNorth(), e = bounds.getEast();
+  return segs.filter(([[lat1, lng1], [lat2, lng2]]) => {
+    const minLat = Math.min(lat1, lat2), maxLat = Math.max(lat1, lat2);
+    const minLng = Math.min(lng1, lng2), maxLng = Math.max(lng1, lng2);
+    return maxLat >= s && minLat <= n && maxLng >= w && minLng <= e;
+  });
+}
+// Standard orientation-based segment intersection test, [lat,lng] pairs
+// treated as plain 2D coordinates — fine at this local (sub-corridor) scale.
+function routeSegOrient(a, b, c) {
+  const v = (b[1] - a[1]) * (c[0] - b[0]) - (b[0] - a[0]) * (c[1] - b[1]);
+  if (Math.abs(v) < 1e-12) return 0;
+  return v > 0 ? 1 : 2;
+}
+function routeOnSeg(a, b, c) {
+  return Math.min(a[0], c[0]) <= b[0] && b[0] <= Math.max(a[0], c[0]) && Math.min(a[1], c[1]) <= b[1] && b[1] <= Math.max(a[1], c[1]);
+}
+function routeSegmentsIntersect(p1, p2, p3, p4) {
+  const o1 = routeSegOrient(p1, p2, p3), o2 = routeSegOrient(p1, p2, p4), o3 = routeSegOrient(p3, p4, p1), o4 = routeSegOrient(p3, p4, p2);
+  if (o1 !== o2 && o3 !== o4) return true;
+  if (o1 === 0 && routeOnSeg(p1, p3, p2)) return true;
+  if (o2 === 0 && routeOnSeg(p1, p4, p2)) return true;
+  if (o3 === 0 && routeOnSeg(p3, p1, p4)) return true;
+  if (o4 === 0 && routeOnSeg(p3, p2, p4)) return true;
+  return false;
+}
+
+// Plain binary min-heap for A*'s open set — nothing built into JS does this.
+class RouteMinHeap {
+  constructor() { this.items = []; }
+  get size() { return this.items.length; }
+  push(item, priority) {
+    this.items.push({ item, priority });
+    let i = this.items.length - 1;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (this.items[parent].priority <= this.items[i].priority) break;
+      [this.items[parent], this.items[i]] = [this.items[i], this.items[parent]];
+      i = parent;
+    }
+  }
+  pop() {
+    const top = this.items[0];
+    const last = this.items.pop();
+    if (this.items.length) {
+      this.items[0] = last;
+      let i = 0;
+      while (true) {
+        const l = i * 2 + 1, r = i * 2 + 2;
+        let smallest = i;
+        if (l < this.items.length && this.items[l].priority < this.items[smallest].priority) smallest = l;
+        if (r < this.items.length && this.items[r].priority < this.items[smallest].priority) smallest = r;
+        if (smallest === i) break;
+        [this.items[smallest], this.items[i]] = [this.items[i], this.items[smallest]];
+        i = smallest;
+      }
+    }
+    return top ? top.item : undefined;
+  }
+}
+
+const NEIGHBOR_OFFSETS_8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+// Solves ONE leg (from -> to). opts: { maxCrossings:{ditches,teeth,wire (number|null)}, avoidPoints, coverPolys, fortSegs:{type:[[p1,p2],...]} }.
+// onProgress(pct) is called periodically (also yields a frame so the bar
+// actually paints — a tight synchronous loop of this size would otherwise
+// freeze the tab for the whole search).
+async function solveCoverLeg(from, to, opts, onProgress) {
+  const legLenM = from.distanceTo(to);
+  const padM = Math.min(ROUTE_SOLVE_CORRIDOR_PAD_MAX_M, Math.max(ROUTE_SOLVE_CORRIDOR_PAD_MIN_M, legLenM * ROUTE_SOLVE_CORRIDOR_PAD_FRAC));
+  const refLat = (from.lat + to.lat) / 2 * Math.PI / 180;
+  const mLat = 111320, mLng = 111320 * Math.cos(refLat);
+  const toXY = (ll) => [ll.lng * mLng, ll.lat * mLat];
+  const [fx, fy] = toXY(from), [tx, ty] = toXY(to);
+  const minX = Math.min(fx, tx) - padM, maxX = Math.max(fx, tx) + padM;
+  const minY = Math.min(fy, ty) - padM, maxY = Math.max(fy, ty) + padM;
+  const width = maxX - minX, height = maxY - minY;
+  const cellM = Math.max(ROUTE_SOLVE_GRID_CELL_TARGET_M, Math.sqrt((width * height) / ROUTE_SOLVE_MAX_GRID_CELLS));
+  const cols = Math.max(2, Math.ceil(width / cellM) + 1), rows = Math.max(2, Math.ceil(height / cellM) + 1);
+  const cellToLatLng = (col, row) => L.latLng((minY + row * cellM) / mLat, (minX + col * cellM) / mLng);
+  const latLngToCell = (ll) => { const [x, y] = toXY(ll); return [Math.round((x - minX) / cellM), Math.round((y - minY) / cellM)]; };
+  const [fromCol, fromRow] = latLngToCell(from);
+  const [toCol, toRow] = latLngToCell(to);
+
+  const N = cols * rows;
+  const coverGrid = new Uint8Array(N);
+  const blockedGrid = new Uint8Array(N);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const idx = r * cols + c;
+      const ll = cellToLatLng(c, r);
+      coverGrid[idx] = pointInRouteCover(ll.lat, ll.lng, opts.coverPolys) ? 1 : 0;
+      for (const ap of opts.avoidPoints) {
+        if (ll.distanceTo(ap) < ROUTE_SOLVE_AVOID_POINT_RADIUS_M) { blockedGrid[idx] = 1; break; }
+      }
+    }
+  }
+  const startIdx = fromRow * cols + fromCol, goalIdx = toRow * cols + toCol;
+  if (blockedGrid[startIdx] || blockedGrid[goalIdx]) return null; // an avoid point sits right on one of the route's own waypoints
+
+  const budgetedTypes = ['ditches', 'teeth', 'wire'].filter(k => opts.maxCrossings[k] != null);
+  function stateKey(idx, counts) {
+    let key = String(idx);
+    for (const t of budgetedTypes) key += '#' + counts[t];
+    return key;
+  }
+  const startCounts = {}; budgetedTypes.forEach(t => startCounts[t] = 0);
+  const startKey = stateKey(startIdx, startCounts);
+  const heap = new RouteMinHeap();
+  const gScore = new Map([[startKey, 0]]);
+  const cameFrom = new Map(); // key -> { parent, idx }
+  function heuristic(col, row) { return Math.hypot(col - toCol, row - toRow) * cellM; } // admissible: cheapest possible per-cell cost is 1x (cover)
+  heap.push({ idx: startIdx, counts: startCounts, key: startKey }, heuristic(fromCol, fromRow));
+
+  let iterations = 0, foundKey = null;
+  while (heap.size) {
+    iterations++;
+    if (iterations > ROUTE_SOLVE_MAX_ITER) break;
+    if (iterations % 3000 === 0) {
+      if (onProgress) onProgress(Math.min(95, Math.round((iterations / ROUTE_SOLVE_MAX_ITER) * 100)));
+      await new Promise(requestAnimationFrame); // yield so the tab stays responsive and the progress bar actually paints
+    }
+    const cur = heap.pop();
+    if (cur.idx === goalIdx) { foundKey = cur.key; break; }
+    const curG = gScore.get(cur.key);
+    if (curG === undefined) continue; // a cheaper path to this exact state was already processed — stale heap entry
+    const col = cur.idx % cols, row = Math.floor(cur.idx / cols);
+    for (const [dc, dr] of NEIGHBOR_OFFSETS_8) {
+      const nc = col + dc, nr = row + dr;
+      if (nc < 0 || nc >= cols || nr < 0 || nr >= rows) continue;
+      const nIdx = nr * cols + nc;
+      if (blockedGrid[nIdx]) continue;
+      const moveDist = (dc !== 0 && dr !== 0) ? cellM * Math.SQRT2 : cellM;
+      const edgeCost = moveDist * (coverGrid[nIdx] ? 1 : ROUTE_SOLVE_OPEN_COST_MULT);
+      let newCounts = cur.counts, blocked = false;
+      if (budgetedTypes.length) {
+        const fromLL = cellToLatLng(col, row), toLL = cellToLatLng(nc, nr);
+        const p1 = [fromLL.lat, fromLL.lng], p2 = [toLL.lat, toLL.lng];
+        for (const t of budgetedTypes) {
+          let crosses = false;
+          for (const seg of opts.fortSegs[t]) { if (routeSegmentsIntersect(p1, p2, seg[0], seg[1])) { crosses = true; break; } }
+          if (!crosses) continue;
+          const nextCount = cur.counts[t] + 1;
+          if (nextCount > opts.maxCrossings[t]) { blocked = true; break; }
+          if (newCounts === cur.counts) newCounts = { ...cur.counts };
+          newCounts[t] = nextCount;
+        }
+      }
+      if (blocked) continue;
+      const nKey = stateKey(nIdx, newCounts);
+      const tentativeG = curG + edgeCost;
+      if (!gScore.has(nKey) || tentativeG < gScore.get(nKey)) {
+        gScore.set(nKey, tentativeG);
+        cameFrom.set(nKey, { parent: cur.key, idx: nIdx });
+        heap.push({ idx: nIdx, counts: newCounts, key: nKey }, tentativeG + heuristic(nc, nr));
+      }
+    }
+  }
+  if (!foundKey) return null;
+
+  const pathIdxs = [];
+  let k = foundKey;
+  while (true) {
+    const rec = cameFrom.get(k);
+    if (!rec) { pathIdxs.push(startIdx); break; }
+    pathIdxs.push(rec.idx);
+    k = rec.parent;
+  }
+  pathIdxs.reverse();
+  const points = pathIdxs.map(idx => cellToLatLng(idx % cols, Math.floor(idx / cols)));
+  if (points.length) { points[0] = from; points[points.length - 1] = to; } // exact requested endpoints, not the rounded grid cell
+  const underCover = pathIdxs.map(idx => !!coverGrid[idx]);
+  return { points, underCover };
+}
+
+// Splits the solved path into contiguous under-cover/exposed runs and draws
+// each as its own colored polyline — green under cover, red exposed. Runs
+// share their boundary point (see the slice below) so there's no visible
+// gap between them.
+function renderSolvedRoutePath(points, underCover) {
+  if (points.length < 2) return;
+  let i = 0;
+  while (i < points.length - 1) {
+    let j = i;
+    while (j < points.length - 1 && underCover[j + 1] === underCover[i]) j++;
+    L.polyline(points.slice(i, j + 2), { color: underCover[i] ? '#35c98c' : '#e0526a', weight: 4, opacity: 0.9 }).addTo(routeLayerGroup);
+    i = j + 1;
+  }
+}
+
+let routeSolveRequestId = 0;
+async function computeSolvedRoute() {
+  if (routePoints.length < 2) return;
+  const requestId = ++routeSolveRequestId;
+  routeElevWrapEl.innerHTML = '';
+  routeLayerGroup.clearLayers();
+  redrawRouteMarkers();
+  routeStatsEl.textContent = 'Fetching cover data…';
+  routeSolveProgressTrack.style.display = 'block';
+  routeSolveProgressFill.style.width = '0%';
+
+  // One corridor covering every leg (not a separate fetch per leg) — padded
+  // by the longest leg's own share, same formula solveCoverLeg uses per-leg.
+  const allBounds = L.latLngBounds(routePoints);
+  let maxLegLen = 0;
+  for (let i = 1; i < routePoints.length; i++) maxLegLen = Math.max(maxLegLen, routePoints[i - 1].distanceTo(routePoints[i]));
+  const pad = Math.min(ROUTE_SOLVE_CORRIDOR_PAD_MAX_M, Math.max(ROUTE_SOLVE_CORRIDOR_PAD_MIN_M, maxLegLen * ROUTE_SOLVE_CORRIDOR_PAD_FRAC));
+  const center = allBounds.getCenter();
+  const padDegLat = pad / 111320, padDegLng = pad / (111320 * Math.cos(center.lat * Math.PI / 180));
+  const fetchBounds = L.latLngBounds(
+    L.latLng(allBounds.getSouth() - padDegLat, allBounds.getWest() - padDegLng),
+    L.latLng(allBounds.getNorth() + padDegLat, allBounds.getEast() + padDegLng)
+  );
+
+  const maxCrossings = readRouteObstacleBudgets();
+  const budgetedTypes = ['ditches', 'teeth', 'wire'].filter(k => maxCrossings[k] != null);
+  const [coverPolys, fortSegsRaw] = await Promise.all([
+    fetchRouteCoverPolygons(fetchBounds),
+    Promise.all(budgetedTypes.map(t => fetchRouteFortSegments(t)))
+  ]);
+  if (requestId !== routeSolveRequestId) return;
+  const fortSegs = {};
+  budgetedTypes.forEach((t, i) => { fortSegs[t] = filterSegmentsToBBox(fortSegsRaw[i], fetchBounds); });
+
+  routeStatsEl.textContent = 'Solving…';
+  const opts = { maxCrossings, avoidPoints: routeAvoidPoints, coverPolys, fortSegs };
+  let allPoints = [], allUnderCover = [];
+  for (let i = 1; i < routePoints.length; i++) {
+    const leg = await solveCoverLeg(routePoints[i - 1], routePoints[i], opts, (pct) => {
+      if (requestId === routeSolveRequestId) routeSolveProgressFill.style.width = pct + '%';
+    });
+    if (requestId !== routeSolveRequestId) return;
+    if (!leg) {
+      routeStatsEl.textContent = `No route found between points ${i} and ${i + 1} under these constraints — try loosening the obstacle limits or avoid points.`;
+      routeSolveProgressTrack.style.display = 'none';
+      return;
+    }
+    if (allPoints.length) { leg.points.shift(); leg.underCover.shift(); } // shared vertex with the previous leg's end point
+    allPoints = allPoints.concat(leg.points);
+    allUnderCover = allUnderCover.concat(leg.underCover);
+  }
+  routeSolveProgressTrack.style.display = 'none';
+  if (requestId !== routeSolveRequestId) return;
+
+  renderSolvedRoutePath(allPoints, allUnderCover);
+  const km = totalDistanceMeters(allPoints, false) / 1000;
+  const sec = (km / WALK_SPEED_KMH) * 3600;
+  routeStatsEl.innerHTML = `<b style="color:var(--good);">${km.toFixed(2)} km</b> · ${formatDuration(sec)} walking (under cover)`;
+  const samples = await sampleElevationAlongPath(allPoints, 100);
+  if (requestId !== routeSolveRequestId) return;
+  routeElevWrapEl.innerHTML = buildElevationChartSvg(samples, 380, 130);
+  wireElevationChartHover(routeElevWrapEl, samples, 380, 130);
+}
+document.getElementById('btnRouteSolveGo').addEventListener('click', () => { if (routePoints.length >= 2) computeSolvedRoute(); });
 
 /* ---------------- Draw tool (local scratchpad only) ----------------
    Not part of the published heatmap-data.json — purely local to this
