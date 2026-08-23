@@ -468,6 +468,13 @@
   .horizon-groundview-wrap{position:relative;width:100%;max-width:420px;height:220px;border-radius:6px;overflow:hidden;border:1px solid var(--border);background:#0a0e14;}
   .horizon-photo-viewport img{display:block;}
   .micro-label{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--sub);margin-bottom:2px;}
+  #routeAlternativesList{display:flex;flex-direction:column;gap:4px;max-height:130px;overflow-y:auto;}
+  .route-alt-row{display:flex;flex-direction:column;gap:1px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);cursor:pointer;background:transparent;}
+  .route-alt-row:hover{border-color:var(--accent-hover);}
+  .route-alt-row.active{border-color:var(--accent);background:var(--accent-soft);}
+  .route-alt-label{font-size:11px;font-weight:600;}
+  .route-alt-stats{font-size:10px;color:var(--sub);}
+  .route-alt-empty{font-size:10.5px;color:var(--sub);padding:2px 0;}
   .horizon-history-list{display:flex;flex-wrap:wrap;gap:5px;max-height:70px;overflow-y:auto;}
   .horizon-history-item{
     padding:3px 7px;border-radius:5px;border:1px solid var(--border);background:transparent;
@@ -711,7 +718,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v7.5</span>
+      <span class="version-tag">v7.6</span>
     </div>
   </div>
 </div>
@@ -811,6 +818,17 @@
   </div>
   <div class="panel-stat" id="routeStats">Click points on the map to build a route (2+)</div>
   <div class="horizon-progress-track" id="routeSolveProgressTrack"><div class="horizon-progress-fill" id="routeSolveProgressFill"></div></div>
+  <div id="routeAlternativesWrap" style="display:none;flex-direction:column;gap:5px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
+      <span class="micro-label" style="margin:0;">Alternative routes</span>
+      <select id="routeSortSelect" class="panel-height-input" style="font-size:10.5px;width:auto;">
+        <option value="cover">Sort: most cover</option>
+        <option value="distance">Sort: shortest</option>
+        <option value="exposure">Sort: least max exposure</option>
+      </select>
+    </div>
+    <div id="routeAlternativesList"></div>
+  </div>
   <div class="elev-chart-svg-wrap" id="routeElevWrap"></div>
 </div>
 
@@ -8795,6 +8813,11 @@ function routeClear() {
   routeStatsEl.textContent = 'Click points on the map to build a route (2+)';
   routeElevWrapEl.innerHTML = '';
   routeSolveProgressTrack.style.display = 'none';
+  routeSolveVariants = [];
+  routeSolveSelectedIdx = 0;
+  routeSolveWarningHtml = '';
+  routeAlternativesWrapEl.style.display = 'none';
+  routeAlternativesListEl.innerHTML = '';
   hideChartHoverMapMarker();
 }
 map.on('click', (e) => {
@@ -8831,6 +8854,41 @@ const ROUTE_SOLVE_AVOID_POINT_RADIUS_M = 40;
 // bit generous to compensate for the grid not being fine enough to hug a
 // literal zero-width line at the cell sizes long legs coarsen down to.
 const ROUTE_SOLVE_TREE_ROW_BUFFER_M = 15;
+// Solving once per profile (reusing the same per-leg grid — see
+// buildLegGrid/runAStarOnGrid) yields genuinely different physical routes:
+// a low open-ground multiplier barely bothers detouring for cover, a high
+// one accepts a much longer walk to stay hidden. Offered to the user as
+// alternatives rather than only ever showing the max-cover one. Order here
+// is also dedup priority (see the dedup pass in computeSolvedRoute) — first
+// listed wins when two profiles converge on the same physical path.
+const ROUTE_SOLVE_PROFILES = [
+  { key: 'cover', label: 'Max cover', openCostMult: ROUTE_SOLVE_OPEN_COST_MULT },
+  { key: 'balanced', label: 'Balanced', openCostMult: 3 },
+  { key: 'shortest', label: 'Shortest', openCostMult: 1 }
+];
+// Two variants count as "the same route" for the alternatives list if
+// they're within this much of each other on both distance and cover% —
+// e.g. Balanced and Shortest often converge to the identical physical path
+// in an area with little cover nearby, and showing that as two "different"
+// alternatives would just be noise.
+const ROUTE_VARIANT_DEDUP_DIST_FRAC = 0.02;
+const ROUTE_VARIANT_DEDUP_COVER_PP = 2;
+// Post-A* geometry cleanup: the 8-directional grid can only move in 45°
+// steps, so a path that's really following a straight treeline/urban edge
+// comes out as a staircase — and because the staircase's vertices wander a
+// little either side of the true line, some of them can land just outside
+// the cover buffer and get marked red for one grid step even though a
+// straight line through the same stretch would stay fully under cover the
+// whole way. smoothSolvedPath (below) collapses runs of the raw path into
+// a straight line wherever a direct line is at least as good — same or
+// better cover, and crossing no MORE of any budgeted obstacle than the
+// original jagged sub-path did — then re-samples that straight run at fine
+// intervals so its red/green coloring stays accurate rather than painting
+// the whole run one guessed color.
+const ROUTE_SMOOTH_LOOKAHEAD_M = 500; // cap on how far ahead a single straightened run can reach, keeps the check bounded on long legs
+const ROUTE_SMOOTH_COVER_TOLERANCE = 0.03; // a straight replacement may be up to 3 percentage points "worse" in cover before it's rejected (floating-point/sampling slack, not a real regression)
+const ROUTE_SMOOTH_CHECK_SAMPLES = 10; // sample count used while growing a candidate straight run (cheap — fixed cost, not proportional to distance)
+const ROUTE_SMOOTH_SAMPLE_STEP_M = 5; // resampling granularity once a straight run is accepted, for accurate final coloring
 const ROUTE_SOLVE_MAX_ITER = 300000; // safety cap so a pathological leg (e.g. an avoid point sealing off the only way through) fails fast instead of hanging
 let routeAvoidPoints = []; // [L.LatLng], user-placed "must stay away from" points
 let routePlacingAvoidPoints = false;
@@ -9108,11 +9166,15 @@ class RouteMinHeap {
 }
 
 const NEIGHBOR_OFFSETS_8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
-// Solves ONE leg (from -> to). opts: { maxCrossings:{ditches,teeth,wire (number|null)}, avoidPoints, coverPolys, coverLines, fortSegs:{type:[[p1,p2],...]} }.
-// onProgress(pct) is called periodically (also yields a frame so the bar
-// actually paints — a tight synchronous loop of this size would otherwise
-// freeze the tab for the whole search).
-async function solveCoverLeg(from, to, opts, onProgress) {
+// Builds the per-leg search grid (from -> to). opts: { maxCrossings, avoidPoints,
+// coverPolys, coverLines, fortSegs }. Split out from the A* search itself
+// (see runAStarOnGrid) so multiple route PROFILES — different cover-vs-
+// distance tradeoffs, see ROUTE_SOLVE_PROFILES — can reuse the same grid
+// instead of re-fetching/re-classifying cover for every profile on every
+// leg; only the (cheap, in comparison) search itself repeats per profile.
+// Returns null if an avoid point sits right on one of the leg's own
+// endpoints, in which case no profile could ever solve this leg.
+function buildLegGrid(from, to, opts) {
   const legLenM = from.distanceTo(to);
   const padM = Math.min(ROUTE_SOLVE_CORRIDOR_PAD_MAX_M, Math.max(ROUTE_SOLVE_CORRIDOR_PAD_MIN_M, legLenM * ROUTE_SOLVE_CORRIDOR_PAD_FRAC));
   const refLat = (from.lat + to.lat) / 2 * Math.PI / 180;
@@ -9146,6 +9208,18 @@ async function solveCoverLeg(from, to, opts, onProgress) {
   if (blockedGrid[startIdx] || blockedGrid[goalIdx]) return null; // an avoid point sits right on one of the route's own waypoints
 
   const budgetedTypes = ['ditches', 'teeth', 'wire'].filter(k => opts.maxCrossings[k] != null);
+  return { from, to, cols, rows, cellM, coverGrid, blockedGrid, cellToLatLng, startIdx, goalIdx, fromCol, fromRow, toCol, toRow, budgetedTypes };
+}
+
+// Runs A* over an already-built grid (see buildLegGrid) with a given
+// open-ground cost multiplier — this is the one number that actually
+// distinguishes route profiles (max-cover/balanced/shortest); everything
+// else about the search is identical. onProgress(pct) is called
+// periodically (also yields a frame so the bar actually paints — a tight
+// synchronous loop of this size would otherwise freeze the tab for the
+// whole search).
+async function runAStarOnGrid(grid, opts, openCostMult, onProgress) {
+  const { cols, rows, cellM, coverGrid, blockedGrid, cellToLatLng, startIdx, goalIdx, fromCol, fromRow, toCol, toRow, budgetedTypes, from, to } = grid;
   function stateKey(idx, counts) {
     let key = String(idx);
     for (const t of budgetedTypes) key += '#' + counts[t];
@@ -9178,7 +9252,7 @@ async function solveCoverLeg(from, to, opts, onProgress) {
       const nIdx = nr * cols + nc;
       if (blockedGrid[nIdx]) continue;
       const moveDist = (dc !== 0 && dr !== 0) ? cellM * Math.SQRT2 : cellM;
-      const edgeCost = moveDist * (coverGrid[nIdx] ? 1 : ROUTE_SOLVE_OPEN_COST_MULT);
+      const edgeCost = moveDist * (coverGrid[nIdx] ? 1 : openCostMult);
       let newCounts = cur.counts, blocked = false;
       if (budgetedTypes.length) {
         const fromLL = cellToLatLng(col, row), toLL = cellToLatLng(nc, nr);
@@ -9220,6 +9294,102 @@ async function solveCoverLeg(from, to, opts, onProgress) {
   return { points, underCover };
 }
 
+// ---- Post-solve geometry smoothing + route stats (see the doc comment on
+// ROUTE_SMOOTH_LOOKAHEAD_M above for why this exists) ----
+function routeCoverAtPoint(lat, lng, coverPolys, coverLines) {
+  return (pointInRouteCover(lat, lng, coverPolys) || pointNearRouteCoverLines(lat, lng, coverLines, ROUTE_SOLVE_TREE_ROW_BUFFER_M)) ? 1 : 0;
+}
+function routeSegmentCoverFraction(p1, p2, coverPolys, coverLines, samples) {
+  let covered = 0;
+  for (let s = 0; s <= samples; s++) {
+    const t = s / samples;
+    covered += routeCoverAtPoint(p1.lat + (p2.lat - p1.lat) * t, p1.lng + (p2.lng - p1.lng) * t, coverPolys, coverLines);
+  }
+  return covered / (samples + 1);
+}
+function routeSegmentCrossingCount(p1, p2, segs) {
+  let n = 0;
+  for (const seg of segs) { if (routeSegmentsIntersect([p1.lat, p1.lng], [p2.lat, p2.lng], seg[0], seg[1])) n++; }
+  return n;
+}
+// Greedily collapses runs of the raw grid-staircase path into straight
+// lines wherever doing so is provably not worse: no more crossings of any
+// budgeted obstacle than the original sub-path had (so the overall route
+// can't end up over budget), and cover fraction no more than
+// ROUTE_SMOOTH_COVER_TOLERANCE worse than the original sub-path's own
+// cover fraction. Accepted straight runs are re-sampled at
+// ROUTE_SMOOTH_SAMPLE_STEP_M so the returned per-point underCover stays
+// accurate rather than one flat guess across a long straightened run.
+function smoothSolvedPath(points, underCover, opts) {
+  if (points.length <= 2) return { points: points.slice(), underCover: underCover.slice() };
+  const budgetedTypes = Object.keys(opts.fortSegs || {});
+  const outPoints = [points[0]], outCover = [underCover[0]];
+  let i = 0;
+  while (i < points.length - 1) {
+    let bestJ = i + 1;
+    let cumLen = 0, cumCovered = 0;
+    const cumCrossings = {}; budgetedTypes.forEach(t => cumCrossings[t] = 0);
+    for (let j = i + 1; j < points.length; j++) {
+      const segLen = points[j - 1].distanceTo(points[j]);
+      cumLen += segLen;
+      if (underCover[j - 1]) cumCovered += segLen;
+      budgetedTypes.forEach(t => { cumCrossings[t] += routeSegmentCrossingCount(points[j - 1], points[j], opts.fortSegs[t]); });
+
+      if (j === i + 1) { bestJ = j; continue; } // the immediate neighbor is trivially always acceptable — nothing to compare against yet
+
+      const directDist = points[i].distanceTo(points[j]);
+      if (directDist > ROUTE_SMOOTH_LOOKAHEAD_M) break;
+
+      let safe = true;
+      for (const t of budgetedTypes) {
+        if (routeSegmentCrossingCount(points[i], points[j], opts.fortSegs[t]) > cumCrossings[t]) { safe = false; break; }
+      }
+      if (!safe) break;
+
+      const origFrac = cumLen > 0 ? cumCovered / cumLen : 1;
+      const directFrac = routeSegmentCoverFraction(points[i], points[j], opts.coverPolys, opts.coverLines, ROUTE_SMOOTH_CHECK_SAMPLES);
+      if (directFrac < origFrac - ROUTE_SMOOTH_COVER_TOLERANCE) break;
+
+      bestJ = j;
+    }
+    if (bestJ === i + 1) {
+      outPoints.push(points[i + 1]);
+      outCover.push(underCover[i + 1]);
+      i++;
+    } else {
+      const distM = points[i].distanceTo(points[bestJ]);
+      const nSamples = Math.max(1, Math.round(distM / ROUTE_SMOOTH_SAMPLE_STEP_M));
+      for (let s = 1; s <= nSamples; s++) {
+        const t = s / nSamples;
+        const pt = (s === nSamples) ? points[bestJ] : L.latLng(points[i].lat + (points[bestJ].lat - points[i].lat) * t, points[i].lng + (points[bestJ].lng - points[i].lng) * t);
+        outPoints.push(pt);
+        outCover.push(!!routeCoverAtPoint(pt.lat, pt.lng, opts.coverPolys, opts.coverLines));
+      }
+      i = bestJ;
+    }
+  }
+  return { points: outPoints, underCover: outCover };
+}
+// Length-weighted cover percentage and the single longest unbroken exposed
+// (red) stretch, in meters — the two headline numbers for comparing route
+// alternatives beyond raw distance.
+function computeRouteCoverStats(points, underCover) {
+  let totalLenM = 0, coveredLenM = 0, curExposedRunM = 0, maxExposedRunM = 0;
+  for (let i = 0; i < points.length - 1; i++) {
+    const segLen = points[i].distanceTo(points[i + 1]);
+    totalLenM += segLen;
+    if (underCover[i]) {
+      coveredLenM += segLen;
+      curExposedRunM = 0;
+    } else {
+      curExposedRunM += segLen;
+      if (curExposedRunM > maxExposedRunM) maxExposedRunM = curExposedRunM;
+    }
+  }
+  return { totalLenM, coveredLenM, coverPercent: totalLenM > 0 ? (coveredLenM / totalLenM) * 100 : 0, maxExposedRunM };
+}
+function formatRouteExposureM(m) { return m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(2)} km`; }
+
 // Splits the solved path into contiguous under-cover/exposed runs and draws
 // each as its own colored polyline — green under cover, red exposed. Runs
 // share their boundary point (see the slice below) so there's no visible
@@ -9243,6 +9413,68 @@ function renderSolvedRoutePath(points, underCover) {
 }
 
 let routeSolveRequestId = 0;
+// Every solve produces one entry per surviving ROUTE_SOLVE_PROFILES profile
+// (after de-duplicating near-identical ones — see ROUTE_VARIANT_DEDUP_*),
+// each { profile, points, underCover, stats }. routeSolveSelectedIdx is
+// which one is currently drawn/displayed; switching just re-renders already-
+// computed data, no re-solve.
+let routeSolveVariants = [];
+let routeSolveSelectedIdx = 0;
+let routeSolveWarningHtml = ''; // the Overpass-fetch warning, if any — shown regardless of which variant is selected
+const routeAlternativesWrapEl = document.getElementById('routeAlternativesWrap');
+const routeAlternativesListEl = document.getElementById('routeAlternativesList');
+const routeSortSelectEl = document.getElementById('routeSortSelect');
+
+function routeSortedVariantIndices() {
+  const sortBy = routeSortSelectEl.value;
+  const idxs = routeSolveVariants.map((_, i) => i);
+  idxs.sort((a, b) => {
+    const va = routeSolveVariants[a].stats, vb = routeSolveVariants[b].stats;
+    if (sortBy === 'distance') return va.totalLenM - vb.totalLenM;
+    if (sortBy === 'exposure') return va.maxExposedRunM - vb.maxExposedRunM;
+    return vb.coverPercent - va.coverPercent; // 'cover' (default) — most cover first
+  });
+  return idxs;
+}
+
+function renderRouteVariantsList() {
+  if (!routeSolveVariants.length) { routeAlternativesWrapEl.style.display = 'none'; return; }
+  routeAlternativesWrapEl.style.display = 'flex';
+  if (routeSolveVariants.length === 1) {
+    routeAlternativesListEl.innerHTML = `<div class="route-alt-empty">No alternative routes found under these constraints — every profile converged on the same path.</div>`;
+    return;
+  }
+  routeAlternativesListEl.innerHTML = '';
+  for (const idx of routeSortedVariantIndices()) {
+    const v = routeSolveVariants[idx];
+    const km = (v.stats.totalLenM / 1000).toFixed(2);
+    const row = document.createElement('div');
+    row.className = 'route-alt-row' + (idx === routeSolveSelectedIdx ? ' active' : '');
+    row.innerHTML = `<span class="route-alt-label">${v.profile.label}</span><span class="route-alt-stats">${km} km · ${Math.round(v.stats.coverPercent)}% cover · max ${formatRouteExposureM(v.stats.maxExposedRunM)} exposed</span>`;
+    row.addEventListener('click', () => selectRouteVariant(idx));
+    routeAlternativesListEl.appendChild(row);
+  }
+}
+routeSortSelectEl.addEventListener('change', renderRouteVariantsList);
+
+// Renders an already-solved variant (no re-solve) — used both right after a
+// fresh solve and whenever the user clicks a different alternative.
+async function selectRouteVariant(idx) {
+  const v = routeSolveVariants[idx];
+  if (!v) return;
+  routeSolveSelectedIdx = idx;
+  renderRouteVariantsList();
+  routeLayerGroup.clearLayers();
+  redrawRouteMarkers();
+  renderSolvedRoutePath(v.points, v.underCover);
+  const km = v.stats.totalLenM / 1000;
+  const sec = (km / WALK_SPEED_KMH) * 3600;
+  routeStatsEl.innerHTML = `<b style="color:var(--good);">${km.toFixed(2)} km</b> · ${formatDuration(sec)} walking · <b>${Math.round(v.stats.coverPercent)}%</b> under cover · max <b>${formatRouteExposureM(v.stats.maxExposedRunM)}</b> exposed in one stretch${routeSolveWarningHtml}`;
+  const samples = await sampleElevationAlongPath(v.points, 100);
+  routeElevWrapEl.innerHTML = buildElevationChartSvg(samples, 380, 130);
+  wireElevationChartHover(routeElevWrapEl, samples, 380, 130);
+}
+
 async function computeSolvedRoute() {
   if (routePoints.length < 2) return;
   const requestId = ++routeSolveRequestId;
@@ -9250,11 +9482,13 @@ async function computeSolvedRoute() {
   routeLayerGroup.clearLayers();
   redrawRouteMarkers();
   routeStatsEl.textContent = 'Fetching cover data…';
+  routeSolveVariants = [];
+  routeAlternativesWrapEl.style.display = 'none';
   routeSolveProgressTrack.style.display = 'block';
   routeSolveProgressFill.style.width = '0%';
 
   // One corridor covering every leg (not a separate fetch per leg) — padded
-  // by the longest leg's own share, same formula solveCoverLeg uses per-leg.
+  // by the longest leg's own share, same formula buildLegGrid uses per-leg.
   const allBounds = L.latLngBounds(routePoints);
   let maxLegLen = 0;
   for (let i = 1; i < routePoints.length; i++) maxLegLen = Math.max(maxLegLen, routePoints[i - 1].distanceTo(routePoints[i]));
@@ -9284,40 +9518,74 @@ async function computeSolvedRoute() {
   // that's not proof of "no cover here" either, so it gets its own softer warning.
   const coverFetchFailed = !coverData.ok;
   const coverFetchLowConfidence = coverData.ok && coverData.lowConfidence;
-
-  routeStatsEl.textContent = 'Solving…';
-  const opts = { maxCrossings, avoidPoints: routeAvoidPoints, coverPolys: coverData.polygons, coverLines: coverData.lines, fortSegs };
-  let allPoints = [], allUnderCover = [];
-  for (let i = 1; i < routePoints.length; i++) {
-    const leg = await solveCoverLeg(routePoints[i - 1], routePoints[i], opts, (pct) => {
-      if (requestId === routeSolveRequestId) routeSolveProgressFill.style.width = pct + '%';
-    });
-    if (requestId !== routeSolveRequestId) return;
-    if (!leg) {
-      routeStatsEl.textContent = `No route found between points ${i} and ${i + 1} under these constraints — try loosening the obstacle limits or avoid points.`;
-      routeSolveProgressTrack.style.display = 'none';
-      return;
-    }
-    if (allPoints.length) { leg.points.shift(); leg.underCover.shift(); } // shared vertex with the previous leg's end point
-    allPoints = allPoints.concat(leg.points);
-    allUnderCover = allUnderCover.concat(leg.underCover);
-  }
-  routeSolveProgressTrack.style.display = 'none';
-  if (requestId !== routeSolveRequestId) return;
-
-  renderSolvedRoutePath(allPoints, allUnderCover);
-  const km = totalDistanceMeters(allPoints, false) / 1000;
-  const sec = (km / WALK_SPEED_KMH) * 3600;
-  const warningHtml = coverFetchFailed
+  routeSolveWarningHtml = coverFetchFailed
     ? `<br><span style="color:var(--bad,#e0526a);">⚠ couldn't fetch cover data from OSM (all mirrors timed out/failed) — this route was solved with zero known cover and does not reflect real terrain. Try "Solve route" again.</span>`
     : coverFetchLowConfidence
     ? `<br><span style="color:var(--bad,#e0526a);">⚠ primary OSM data sources were unreachable — used a backup source with known incomplete coverage here, so this route may be missing real cover. Try "Solve route" again later.</span>`
     : '';
-  routeStatsEl.innerHTML = `<b style="color:var(--good);">${km.toFixed(2)} km</b> · ${formatDuration(sec)} walking (under cover)${warningHtml}`;
-  const samples = await sampleElevationAlongPath(allPoints, 100);
+
+  routeStatsEl.textContent = 'Building search grid…';
+  const opts = { maxCrossings, avoidPoints: routeAvoidPoints, coverPolys: coverData.polygons, coverLines: coverData.lines, fortSegs };
+
+  // One grid per leg, built once and reused across every profile below.
+  const legGrids = [];
+  for (let i = 1; i < routePoints.length; i++) {
+    const grid = buildLegGrid(routePoints[i - 1], routePoints[i], opts);
+    if (!grid) {
+      routeStatsEl.textContent = `Point ${i} or ${i + 1} sits inside an avoid-point radius — move it or clear avoid points.`;
+      routeSolveProgressTrack.style.display = 'none';
+      return;
+    }
+    legGrids.push(grid);
+  }
+
+  routeStatsEl.textContent = 'Solving…';
+  const totalUnits = legGrids.length * ROUTE_SOLVE_PROFILES.length;
+  let unitsDone = 0;
+  const results = [];
+  for (const profile of ROUTE_SOLVE_PROFILES) {
+    let allPoints = [], allUnderCover = [], failed = false;
+    for (let i = 0; i < legGrids.length; i++) {
+      const leg = await runAStarOnGrid(legGrids[i], opts, profile.openCostMult, (pct) => {
+        if (requestId === routeSolveRequestId) {
+          const overall = ((unitsDone + pct / 100) / totalUnits) * 100;
+          routeSolveProgressFill.style.width = Math.min(99, overall) + '%';
+        }
+      });
+      if (requestId !== routeSolveRequestId) return;
+      unitsDone++;
+      if (!leg) { failed = true; break; }
+      if (allPoints.length) { leg.points.shift(); leg.underCover.shift(); } // shared vertex with the previous leg's end point
+      allPoints = allPoints.concat(leg.points);
+      allUnderCover = allUnderCover.concat(leg.underCover);
+    }
+    if (failed) continue;
+    const smoothed = smoothSolvedPath(allPoints, allUnderCover, opts);
+    results.push({ profile, points: smoothed.points, underCover: smoothed.underCover, stats: computeRouteCoverStats(smoothed.points, smoothed.underCover) });
+  }
+  routeSolveProgressTrack.style.display = 'none';
   if (requestId !== routeSolveRequestId) return;
-  routeElevWrapEl.innerHTML = buildElevationChartSvg(samples, 380, 130);
-  wireElevationChartHover(routeElevWrapEl, samples, 380, 130);
+
+  if (!results.length) {
+    routeStatsEl.textContent = `No route found under these constraints — try loosening the obstacle limits or avoid points.`;
+    return;
+  }
+
+  // De-dup near-identical profiles (e.g. Balanced and Shortest often
+  // converge on the exact same path where there's little cover nearby) —
+  // first-listed profile in ROUTE_SOLVE_PROFILES wins ties.
+  const unique = [];
+  for (const v of results) {
+    const dup = unique.some(u => {
+      const distFrac = Math.abs(u.stats.totalLenM - v.stats.totalLenM) / Math.max(u.stats.totalLenM, v.stats.totalLenM, 1);
+      const coverDiff = Math.abs(u.stats.coverPercent - v.stats.coverPercent);
+      return distFrac < ROUTE_VARIANT_DEDUP_DIST_FRAC && coverDiff < ROUTE_VARIANT_DEDUP_COVER_PP;
+    });
+    if (!dup) unique.push(v);
+  }
+
+  routeSolveVariants = unique;
+  await selectRouteVariant(0);
 }
 document.getElementById('btnRouteSolveGo').addEventListener('click', () => { if (routePoints.length >= 2) computeSolvedRoute(); });
 
