@@ -572,7 +572,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v7.1</span>
+      <span class="version-tag">v7.2</span>
     </div>
   </div>
 </div>
@@ -5318,10 +5318,10 @@ document.getElementById('btnRouteClear').addEventListener('click', routeClear);
    entirely. Distance/ETA/elevation reuse Foot mode's own formulas/pipeline
    unchanged — only the path geometry differs. */
 const ROUTE_SOLVE_GRID_CELL_TARGET_M = 20; // nominal cell size; coarsened for a long leg so total cells stay bounded (see ROUTE_SOLVE_MAX_GRID_CELLS)
-const ROUTE_SOLVE_MAX_GRID_CELLS = 45000;
-const ROUTE_SOLVE_CORRIDOR_PAD_FRAC = 0.35; // how far sideways of the straight line the search corridor extends, as a fraction of leg length
-const ROUTE_SOLVE_CORRIDOR_PAD_MIN_M = 250, ROUTE_SOLVE_CORRIDOR_PAD_MAX_M = 2500;
-const ROUTE_SOLVE_OPEN_COST_MULT = 6; // how much more expensive open ground is per meter than cover — the actual "prefer cover" lever
+const ROUTE_SOLVE_MAX_GRID_CELLS = 50000; // 70000 was tried and measured genuinely too slow (multiple minutes on a ~10km leg) — this is a smaller, still-real bump from the original 45000
+const ROUTE_SOLVE_CORRIDOR_PAD_FRAC = 0.4; // how far sideways of the straight line the search corridor extends, as a fraction of leg length — a modest widen from 0.35; a much wider corridor (0.5, also tried) forces cell size up too much for the cell budget above to stay fast
+const ROUTE_SOLVE_CORRIDOR_PAD_MIN_M = 250, ROUTE_SOLVE_CORRIDOR_PAD_MAX_M = 3000;
+const ROUTE_SOLVE_OPEN_COST_MULT = 9; // how much more expensive open ground is per meter than cover — the actual "prefer cover" lever; raised from 6 so a real detour to reach cover actually pays for itself more often (this one's cheap — doesn't grow the search space, just biases it)
 const ROUTE_SOLVE_AVOID_POINT_RADIUS_M = 40;
 // A shelterbelt treeline is mapped as a thin LINE (see natural=tree_row in
 // fetchRouteCoverData), not an area with real width — this is the assumed
@@ -5384,30 +5384,44 @@ function readRouteObstacleBudgets() {
 // need their own near-the-line-within-a-buffer test (see
 // pointNearRouteCoverLines) since "inside" doesn't mean anything for a
 // zero-width feature.
+// Ground-truthed bug: Overpass's public instance is sometimes just slow —
+// a query that comes back in 3s one moment can take 25s+ a minute later
+// under load. The 20s timeout this used to have was getting hit for real,
+// and on timeout/failure this silently fell back to zero cover data with
+// NOTHING telling the user that had happened — a solved route that looks
+// entirely plausible but was actually computed completely blind to cover,
+// indistinguishable from "there's genuinely no cover here" from the
+// outside. Now: a longer timeout, one retry on failure before giving up,
+// and an `ok` flag the caller surfaces to the user rather than swallowing.
 async function fetchRouteCoverData(bounds) {
   const s = bounds.getSouth(), w = bounds.getWest(), n = bounds.getNorth(), e = bounds.getEast();
   const bbox = `${s},${w},${n},${e}`;
-  const query = `[out:json][timeout:25];(way["natural"="wood"](${bbox});way["landuse"="forest"](${bbox});way["landuse"="residential"](${bbox});way["landuse"="commercial"](${bbox});way["landuse"="industrial"](${bbox});way["natural"="tree_row"](${bbox});way["barrier"="hedge"](${bbox}););out geom;`;
-  const polygons = [], lines = [];
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 20000);
-    const resp = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: 'data=' + encodeURIComponent(query), signal: ctrl.signal });
-    clearTimeout(timer);
-    if (!resp.ok) return { polygons, lines };
-    const data = await resp.json();
-    (data.elements || []).forEach(el => {
-      if (el.type !== 'way' || !el.geometry || el.geometry.length < 2) return;
-      const tags = el.tags || {};
-      const isLine = tags.natural === 'tree_row' || tags.barrier === 'hedge';
-      const pts = el.geometry.map(pt => [pt.lat, pt.lon]);
-      let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
-      pts.forEach(([lat, lng]) => { minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat); minLng = Math.min(minLng, lng); maxLng = Math.max(maxLng, lng); });
-      if (isLine) lines.push({ points: pts, bbox: [minLat, maxLat, minLng, maxLng] });
-      else if (pts.length >= 3) polygons.push({ ring: pts, bbox: [minLat, maxLat, minLng, maxLng] });
-    });
-  } catch (e) {} // Overpass down/slow/rate-limited — solver falls back to whatever it already has (often nothing) rather than blocking
-  return { polygons, lines };
+  const query = `[out:json][timeout:45];(way["natural"="wood"](${bbox});way["landuse"="forest"](${bbox});way["landuse"="residential"](${bbox});way["landuse"="commercial"](${bbox});way["landuse"="industrial"](${bbox});way["natural"="tree_row"](${bbox});way["barrier"="hedge"](${bbox}););out geom;`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const polygons = [], lines = [];
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 35000);
+      const resp = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: 'data=' + encodeURIComponent(query), signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      (data.elements || []).forEach(el => {
+        if (el.type !== 'way' || !el.geometry || el.geometry.length < 2) return;
+        const tags = el.tags || {};
+        const isLine = tags.natural === 'tree_row' || tags.barrier === 'hedge';
+        const pts = el.geometry.map(pt => [pt.lat, pt.lon]);
+        let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+        pts.forEach(([lat, lng]) => { minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat); minLng = Math.min(minLng, lng); maxLng = Math.max(maxLng, lng); });
+        if (isLine) lines.push({ points: pts, bbox: [minLat, maxLat, minLng, maxLng] });
+        else if (pts.length >= 3) polygons.push({ ring: pts, bbox: [minLat, maxLat, minLng, maxLng] });
+      });
+      return { polygons, lines, ok: true };
+    } catch (e) {
+      if (attempt === 0) continue; // one retry — Overpass failures are often transient (server-side queueing), not a real "no data here"
+    }
+  }
+  return { polygons: [], lines: [], ok: false };
 }
 // Standard even-odd ray-casting point-in-polygon test, bbox pre-filtered —
 // same technique as the horizon tool's own (now-removed) obstacle check.
@@ -5674,7 +5688,14 @@ function renderSolvedRoutePath(points, underCover) {
   while (i < points.length - 1) {
     let j = i;
     while (j < points.length - 1 && underCover[j + 1] === underCover[i]) j++;
-    L.polyline(points.slice(i, j + 2), { color: underCover[i] ? '#35c98c' : '#e0526a', weight: 4, opacity: 0.9 }).addTo(routeLayerGroup);
+    // smoothFactor:0 — Leaflet's default (1.0) simplifies a rendered path
+    // based on the CURRENT zoom's pixel scale, which at a zoomed-out view
+    // of a multi-km route can visually flatten real, correct wiggles
+    // (e.g. hugging a treeline only a few meters off the direct line) into
+    // what looks like a straight segment even though the underlying points
+    // are all real and correctly placed. This guarantees what's on screen
+    // always matches the actual solved geometry, at any zoom.
+    L.polyline(points.slice(i, j + 2), { color: underCover[i] ? '#35c98c' : '#e0526a', weight: 4, opacity: 0.9, smoothFactor: 0 }).addTo(routeLayerGroup);
     i = j + 1;
   }
 }
@@ -5713,6 +5734,11 @@ async function computeSolvedRoute() {
   const fortSegs = {};
   budgetedTypes.forEach((t, i) => { fortSegs[t] = filterSegmentsToBBox(fortSegsRaw[i], fetchBounds); });
 
+  // If Overpass failed/timed out even after the retry inside fetchRouteCoverData,
+  // the solver is about to run completely blind to real cover — flag this instead
+  // of silently presenting a route that looks cover-aware but isn't.
+  const coverFetchFailed = !coverData.ok;
+
   routeStatsEl.textContent = 'Solving…';
   const opts = { maxCrossings, avoidPoints: routeAvoidPoints, coverPolys: coverData.polygons, coverLines: coverData.lines, fortSegs };
   let allPoints = [], allUnderCover = [];
@@ -5736,7 +5762,10 @@ async function computeSolvedRoute() {
   renderSolvedRoutePath(allPoints, allUnderCover);
   const km = totalDistanceMeters(allPoints, false) / 1000;
   const sec = (km / WALK_SPEED_KMH) * 3600;
-  routeStatsEl.innerHTML = `<b style="color:var(--good);">${km.toFixed(2)} km</b> · ${formatDuration(sec)} walking (under cover)`;
+  const warningHtml = coverFetchFailed
+    ? `<br><span style="color:var(--bad,#e0526a);">⚠ couldn't fetch cover data from OSM (Overpass timed out/failed) — this route was solved with zero known cover and does not reflect real terrain. Try "Solve route" again.</span>`
+    : '';
+  routeStatsEl.innerHTML = `<b style="color:var(--good);">${km.toFixed(2)} km</b> · ${formatDuration(sec)} walking (under cover)${warningHtml}`;
   const samples = await sampleElevationAlongPath(allPoints, 100);
   if (requestId !== routeSolveRequestId) return;
   routeElevWrapEl.innerHTML = buildElevationChartSvg(samples, 380, 130);
