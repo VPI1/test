@@ -725,7 +725,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v7.9</span>
+      <span class="version-tag">v7.10</span>
     </div>
   </div>
 </div>
@@ -8868,15 +8868,31 @@ const ROUTE_SOLVE_AVOID_POINT_RADIUS_M = 40;
 // effective canopy/concealment spread either side of it, deliberately a
 // bit generous to compensate for the grid not being fine enough to hug a
 // literal zero-width line at the cell sizes long legs coarsen down to.
-// Ground-truthed: 15m still let a route that visibly hugs a real treeline in
-// satellite imagery clip just outside the buffer and get marked exposed for
-// short stretches — real canopy has its own width, and OSM's mapped line
-// commonly sits a few meters off from the true visible edge, so a path
-// walking right along the buffer's boundary (which nothing biases it away
-// from — every cell inside the buffer costs the same regardless of how
-// close to the edge) has no margin left to absorb that. Bumped up to give
-// that margin back.
-const ROUTE_SOLVE_TREE_ROW_BUFFER_M = 20;
+// Ground-truthed: 15m, then 20m, both still let a route that visibly hugs a
+// real treeline in satellite imagery clip just outside the buffer and get
+// marked exposed for short stretches. Two compounding causes: real canopy
+// has its own width and OSM's mapped line commonly sits a few meters off
+// from the true visible edge (more buffer helps this part), AND every cell
+// inside the buffer used to cost exactly the same regardless of how close
+// to its edge it was, so the search had no reason to prefer hugging the
+// treeline's actual mapped position over skimming the buffer's outer rim —
+// right where a few meters of that same real-world imprecision is most
+// likely to tip a cell the wrong way. The buffer alone can't fully fix the
+// second part (a bigger buffer just moves the rim further out, the search
+// still has no reason not to walk right along IT instead); see
+// ROUTE_SOLVE_TREE_ROW_GRADIENT_STRENGTH and routeCoverDepth for the fix
+// to that, and buildLegGrid/runAStarOnGrid for where it's actually applied.
+const ROUTE_SOLVE_TREE_ROW_BUFFER_M = 25;
+// How strongly the search is pushed toward the treeline's actual mapped
+// line, versus treating the whole buffer as uniformly cheap: 0 = old
+// behavior (flat cost anywhere inside the buffer); 1 = the buffer's outer
+// rim costs as much as fully open ground, which would fight the buffer's
+// own purpose (a cell right at the rim IS still meant to count as under
+// cover). 0.6 keeps every covered cell meaningfully cheaper than open
+// ground everywhere in the buffer, while still giving a real, smooth
+// incentive to walk closer to the line than the search would otherwise
+// bother to.
+const ROUTE_SOLVE_TREE_ROW_GRADIENT_STRENGTH = 0.6;
 // Solving once per profile (reusing the same per-leg grid — see
 // buildLegGrid/runAStarOnGrid) yields genuinely different physical routes:
 // a low open-ground multiplier barely bothers detouring for cover, a high
@@ -9101,6 +9117,28 @@ function pointNearRouteCoverLines(lat, lng, lines, bufferM) {
   }
   return false;
 }
+// How "deep" inside cover a point is, as a fraction: 1 at a polygon (an
+// area, not a line, so it doesn't have the same edge-hugging problem — see
+// ROUTE_SOLVE_TREE_ROW_GRADIENT_STRENGTH) or right on a mapped treeline/
+// hedge, fading linearly to 0 at the outer edge of ROUTE_SOLVE_TREE_ROW_
+// BUFFER_M, 0 beyond it. Unlike pointNearRouteCoverLines this can't
+// early-return on the first line within range — it needs the CLOSEST one,
+// since the fraction is a real distance measurement, not a yes/no.
+function routeCoverDepth(lat, lng, coverPolys, coverLines) {
+  if (pointInRouteCover(lat, lng, coverPolys)) return 1;
+  const bufferM = ROUTE_SOLVE_TREE_ROW_BUFFER_M;
+  const padDeg = bufferM / 100000;
+  let nearestM = Infinity;
+  for (const line of coverLines) {
+    const [minLat, maxLat, minLng, maxLng] = line.bbox;
+    if (lat < minLat - padDeg || lat > maxLat + padDeg || lng < minLng - padDeg || lng > maxLng + padDeg) continue;
+    for (let i = 1; i < line.points.length; i++) {
+      const d = distPointToSegmentM(lat, lng, line.points[i - 1], line.points[i]);
+      if (d < nearestM) nearestM = d;
+    }
+  }
+  return nearestM <= bufferM ? 1 - nearestM / bufferM : 0;
+}
 
 // Fortification line segments, for the obstacle-crossing budgets — reuses
 // FORTIFICATIONS' already-loaded Leaflet layer (see the fortification
@@ -9226,13 +9264,16 @@ function buildLegGrid(from, to, opts) {
   const [toCol, toRow] = latLngToCell(to);
 
   const N = cols * rows;
-  const coverGrid = new Uint8Array(N);
+  const coverGrid = new Uint8Array(N); // boolean "is this cell under cover" — used for classification/rendering/stats, unaffected by the gradient below
+  const coverDepthGrid = new Float32Array(N); // 0..1 "how deep inside cover" — used only to weight A* edge cost, see routeCoverDepth
   const blockedGrid = new Uint8Array(N);
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       const idx = r * cols + c;
       const ll = cellToLatLng(c, r);
-      coverGrid[idx] = (pointInRouteCover(ll.lat, ll.lng, opts.coverPolys) || pointNearRouteCoverLines(ll.lat, ll.lng, opts.coverLines, ROUTE_SOLVE_TREE_ROW_BUFFER_M)) ? 1 : 0;
+      const depth = routeCoverDepth(ll.lat, ll.lng, opts.coverPolys, opts.coverLines);
+      coverDepthGrid[idx] = depth;
+      coverGrid[idx] = depth > 0 ? 1 : 0;
       for (const ap of opts.avoidPoints) {
         if (ll.distanceTo(ap) < ROUTE_SOLVE_AVOID_POINT_RADIUS_M) { blockedGrid[idx] = 1; break; }
       }
@@ -9242,7 +9283,7 @@ function buildLegGrid(from, to, opts) {
   if (blockedGrid[startIdx] || blockedGrid[goalIdx]) return null; // an avoid point sits right on one of the route's own waypoints
 
   const budgetedTypes = ['ditches', 'teeth', 'wire'].filter(k => opts.maxCrossings[k] != null);
-  return { from, to, cols, rows, cellM, coverGrid, blockedGrid, cellToLatLng, startIdx, goalIdx, fromCol, fromRow, toCol, toRow, budgetedTypes };
+  return { from, to, cols, rows, cellM, coverGrid, coverDepthGrid, blockedGrid, cellToLatLng, startIdx, goalIdx, fromCol, fromRow, toCol, toRow, budgetedTypes };
 }
 
 // Runs A* over an already-built grid (see buildLegGrid) with a given
@@ -9253,7 +9294,7 @@ function buildLegGrid(from, to, opts) {
 // synchronous loop of this size would otherwise freeze the tab for the
 // whole search).
 async function runAStarOnGrid(grid, opts, openCostMult, onProgress) {
-  const { cols, rows, cellM, coverGrid, blockedGrid, cellToLatLng, startIdx, goalIdx, fromCol, fromRow, toCol, toRow, budgetedTypes, from, to } = grid;
+  const { cols, rows, cellM, coverGrid, coverDepthGrid, blockedGrid, cellToLatLng, startIdx, goalIdx, fromCol, fromRow, toCol, toRow, budgetedTypes, from, to } = grid;
   function stateKey(idx, counts) {
     let key = String(idx);
     for (const t of budgetedTypes) key += '#' + counts[t];
@@ -9286,7 +9327,14 @@ async function runAStarOnGrid(grid, opts, openCostMult, onProgress) {
       const nIdx = nr * cols + nc;
       if (blockedGrid[nIdx]) continue;
       const moveDist = (dc !== 0 && dr !== 0) ? cellM * Math.SQRT2 : cellM;
-      const edgeCost = moveDist * (coverGrid[nIdx] ? 1 : openCostMult);
+      // Truly open ground (depth 0 — beyond the cover buffer entirely) still
+      // costs the full openCostMult, unchanged. WITHIN the buffer, cost
+      // varies smoothly with depth instead of being flat — see
+      // ROUTE_SOLVE_TREE_ROW_GRADIENT_STRENGTH for why: this is what
+      // actually pulls the search toward a treeline's real position instead
+      // of letting it walk the buffer's outer rim for free.
+      const depth = coverDepthGrid[nIdx];
+      const edgeCost = moveDist * (depth > 0 ? 1 + (1 - depth) * (openCostMult - 1) * ROUTE_SOLVE_TREE_ROW_GRADIENT_STRENGTH : openCostMult);
       let newCounts = cur.counts, blocked = false;
       if (budgetedTypes.length) {
         const fromLL = cellToLatLng(col, row), toLL = cellToLatLng(nc, nr);
