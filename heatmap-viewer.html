@@ -572,7 +572,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v7.2</span>
+      <span class="version-tag">v7.3</span>
     </div>
   </div>
 </div>
@@ -5384,42 +5384,76 @@ function readRouteObstacleBudgets() {
 // need their own near-the-line-within-a-buffer test (see
 // pointNearRouteCoverLines) since "inside" doesn't mean anything for a
 // zero-width feature.
-// Ground-truthed bug: Overpass's public instance is sometimes just slow —
-// a query that comes back in 3s one moment can take 25s+ a minute later
-// under load. The 20s timeout this used to have was getting hit for real,
-// and on timeout/failure this silently fell back to zero cover data with
-// NOTHING telling the user that had happened — a solved route that looks
-// entirely plausible but was actually computed completely blind to cover,
-// indistinguishable from "there's genuinely no cover here" from the
-// outside. Now: a longer timeout, one retry on failure before giving up,
-// and an `ok` flag the caller surfaces to the user rather than swallowing.
+// Ground-truthed bug (round 1): Overpass's public instance is sometimes
+// just slow — a query that comes back in 3s one moment can take 25s+ a
+// minute later under load. Fixed with a longer timeout + one retry.
+//
+// Ground-truthed bug (round 2): that wasn't enough, because the single
+// hardcoded host (overpass-api.de) can have outright OUTAGES, not just
+// slowness — confirmed live: overpass-api.de failed every request for an
+// extended stretch ("Failed to fetch" after 40s+) while an alternate public
+// mirror (overpass.osm.ch) answered the identical query in under 200ms.
+// Retrying the same dead host twice does nothing. Now tries multiple
+// independent public Overpass mirrors in order and uses the first one that
+// answers; only reports failure if ALL of them fail. `ok` flag (and which
+// mirror actually served the data, for diagnostics) is surfaced to the
+// caller rather than swallowed.
+// Order matters: overpass-api.de is the canonical full-planet instance
+// (confirmed has real Ukraine tree_row/forest data), kumi.systems is a
+// well-known independent full mirror. osm.ch responds fast but, tested
+// live against a bbox with 124 known polygons + 112 known lines, came
+// back with a valid 200 and ZERO elements — its regional coverage looks
+// incomplete, so it's kept only as a last resort, and even then a mirror
+// that comes back empty never overrides one that actually found data.
+const ROUTE_OVERPASS_MIRRORS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.osm.ch/api/interpreter'
+];
+async function fetchRouteCoverDataFromMirror(endpoint, query) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 25000);
+  try {
+    const resp = await fetch(endpoint, { method: 'POST', body: 'data=' + encodeURIComponent(query), signal: ctrl.signal });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    const polygons = [], lines = [];
+    (data.elements || []).forEach(el => {
+      if (el.type !== 'way' || !el.geometry || el.geometry.length < 2) return;
+      const tags = el.tags || {};
+      const isLine = tags.natural === 'tree_row' || tags.barrier === 'hedge';
+      const pts = el.geometry.map(pt => [pt.lat, pt.lon]);
+      let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+      pts.forEach(([lat, lng]) => { minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat); minLng = Math.min(minLng, lng); maxLng = Math.max(maxLng, lng); });
+      if (isLine) lines.push({ points: pts, bbox: [minLat, maxLat, minLng, maxLng] });
+      else if (pts.length >= 3) polygons.push({ ring: pts, bbox: [minLat, maxLat, minLng, maxLng] });
+    });
+    return { polygons, lines, ok: true, source: endpoint };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+// osm.ch is kept only as a last resort (see note above) — its Ukraine
+// coverage is known incomplete, so an empty result specifically from it is
+// not trustworthy evidence of "genuinely no cover here."
+const ROUTE_OVERPASS_LOW_CONFIDENCE_MIRROR = 'https://overpass.osm.ch/api/interpreter';
 async function fetchRouteCoverData(bounds) {
   const s = bounds.getSouth(), w = bounds.getWest(), n = bounds.getNorth(), e = bounds.getEast();
   const bbox = `${s},${w},${n},${e}`;
   const query = `[out:json][timeout:45];(way["natural"="wood"](${bbox});way["landuse"="forest"](${bbox});way["landuse"="residential"](${bbox});way["landuse"="commercial"](${bbox});way["landuse"="industrial"](${bbox});way["natural"="tree_row"](${bbox});way["barrier"="hedge"](${bbox}););out geom;`;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const polygons = [], lines = [];
+  let emptyFallback = null; // a mirror that succeeded but found nothing — kept in case every mirror agrees
+  for (const endpoint of ROUTE_OVERPASS_MIRRORS) {
     try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 35000);
-      const resp = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: 'data=' + encodeURIComponent(query), signal: ctrl.signal });
-      clearTimeout(timer);
-      if (!resp.ok) throw new Error('HTTP ' + resp.status);
-      const data = await resp.json();
-      (data.elements || []).forEach(el => {
-        if (el.type !== 'way' || !el.geometry || el.geometry.length < 2) return;
-        const tags = el.tags || {};
-        const isLine = tags.natural === 'tree_row' || tags.barrier === 'hedge';
-        const pts = el.geometry.map(pt => [pt.lat, pt.lon]);
-        let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
-        pts.forEach(([lat, lng]) => { minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat); minLng = Math.min(minLng, lng); maxLng = Math.max(maxLng, lng); });
-        if (isLine) lines.push({ points: pts, bbox: [minLat, maxLat, minLng, maxLng] });
-        else if (pts.length >= 3) polygons.push({ ring: pts, bbox: [minLat, maxLat, minLng, maxLng] });
-      });
-      return { polygons, lines, ok: true };
+      const result = await fetchRouteCoverDataFromMirror(endpoint, query);
+      if (result.polygons.length || result.lines.length) return result; // real data — use it immediately
+      emptyFallback = result; // this mirror works but this area looks empty to it specifically — don't trust it yet, keep trying others
     } catch (e) {
-      if (attempt === 0) continue; // one retry — Overpass failures are often transient (server-side queueing), not a real "no data here"
+      continue; // this mirror is down/slow/rate-limited — try the next one
     }
+  }
+  if (emptyFallback) {
+    emptyFallback.lowConfidence = emptyFallback.source === ROUTE_OVERPASS_LOW_CONFIDENCE_MIRROR;
+    return emptyFallback;
   }
   return { polygons: [], lines: [], ok: false };
 }
@@ -5734,10 +5768,14 @@ async function computeSolvedRoute() {
   const fortSegs = {};
   budgetedTypes.forEach((t, i) => { fortSegs[t] = filterSegmentsToBBox(fortSegsRaw[i], fetchBounds); });
 
-  // If Overpass failed/timed out even after the retry inside fetchRouteCoverData,
-  // the solver is about to run completely blind to real cover — flag this instead
-  // of silently presenting a route that looks cover-aware but isn't.
+  // If every Overpass mirror failed, the solver is about to run completely
+  // blind to real cover — flag this instead of silently presenting a route
+  // that looks cover-aware but isn't. Separately: even an "ok" result can be
+  // a low-confidence empty result from the one fallback mirror with known
+  // incomplete regional coverage (see ROUTE_OVERPASS_LOW_CONFIDENCE_MIRROR) —
+  // that's not proof of "no cover here" either, so it gets its own softer warning.
   const coverFetchFailed = !coverData.ok;
+  const coverFetchLowConfidence = coverData.ok && coverData.lowConfidence;
 
   routeStatsEl.textContent = 'Solving…';
   const opts = { maxCrossings, avoidPoints: routeAvoidPoints, coverPolys: coverData.polygons, coverLines: coverData.lines, fortSegs };
@@ -5763,7 +5801,9 @@ async function computeSolvedRoute() {
   const km = totalDistanceMeters(allPoints, false) / 1000;
   const sec = (km / WALK_SPEED_KMH) * 3600;
   const warningHtml = coverFetchFailed
-    ? `<br><span style="color:var(--bad,#e0526a);">⚠ couldn't fetch cover data from OSM (Overpass timed out/failed) — this route was solved with zero known cover and does not reflect real terrain. Try "Solve route" again.</span>`
+    ? `<br><span style="color:var(--bad,#e0526a);">⚠ couldn't fetch cover data from OSM (all mirrors timed out/failed) — this route was solved with zero known cover and does not reflect real terrain. Try "Solve route" again.</span>`
+    : coverFetchLowConfidence
+    ? `<br><span style="color:var(--bad,#e0526a);">⚠ primary OSM data sources were unreachable — used a backup source with known incomplete coverage here, so this route may be missing real cover. Try "Solve route" again later.</span>`
     : '';
   routeStatsEl.innerHTML = `<b style="color:var(--good);">${km.toFixed(2)} km</b> · ${formatDuration(sec)} walking (under cover)${warningHtml}`;
   const samples = await sampleElevationAlongPath(allPoints, 100);
