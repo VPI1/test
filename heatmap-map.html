@@ -421,6 +421,11 @@
   .draw-actions-row button{flex:1;}
   #map.drawing-cursor{cursor:crosshair;}
   #map.drawing-cursor .leaflet-interactive{cursor:crosshair!important;}
+  /* Space held while Draw is active — see spacePanActive — swaps the
+     crosshair for the standard pan-grab cursor so it's obvious dragging
+     will move the map, not draw, for as long as the key stays down. */
+  #map.space-pan-active,#map.space-pan-active.drawing-cursor{cursor:grab;}
+  #map.space-pan-active.leaflet-dragging{cursor:grabbing;}
 
   /* ---- Drag handle shared by every floating panel below (Ruler/Route/
      Horizon) — see makePanelDraggable. A small grip bar inside each
@@ -706,7 +711,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v7.4</span>
+      <span class="version-tag">v7.5</span>
     </div>
   </div>
 </div>
@@ -7464,20 +7469,27 @@ function setToolMode(newMode) {
   if (oldMode === 'horizon') { horizonClear(); map.removeLayer(horizonHistoryLayerGroup); }
   if (toolMode === 'horizon') horizonHistoryLayerGroup.addTo(map);
   if (oldMode === 'route') routeClear();
-  // Ruler, Draw, and Route all need the view to hold still for the whole
-  // interaction (Draw's live preview — see the canvas-based system below —
-  // tracks the pointer in screen-pixel space, which only stays valid if the
-  // view can't shift mid-stroke; Ruler/Route's points are placed relative to
-  // each other on a fixed view). Coord-picking and Horizon are both
-  // single-tap tools with no such dependency, so they deliberately leave
-  // panning and zooming free.
-  const locksView = toolMode === 'ruler' || toolMode === 'draw' || toolMode === 'route';
-  if (locksView) {
+  // Ruler and Route place points from Leaflet's own click latlng (already
+  // real geo-coordinates, reprojected automatically on every pan/zoom just
+  // like any other marker), so panning/zooming between clicks was never
+  // actually unsafe for them — only Draw's live preview genuinely needs the
+  // view to hold still DURING a stroke, since it's plotted directly in
+  // screen-pixel space for performance (see the canvas-based system below)
+  // and has no way to reproject mid-stroke. So: Draw keeps left-click-drag
+  // reserved for drawing (that gesture can't mean two things at once), but
+  // gets every other form of navigation — scroll/pinch zoom, box-zoom, and a
+  // hold-Space-to-pan escape hatch (see spacePanActive below) — while just
+  // ARMED, so the user isn't forced back to the Pan tool to reposition
+  // between strokes. Zoom is then further, briefly disabled by startDrawing
+  // for the actual duration of a stroke (same screen-pixel reasoning) and
+  // restored by finishDrawing/cancelCurrentDrawing once it ends.
+  // Ruler and Route get full normal navigation with no restriction at all.
+  if (toolMode === 'draw') {
     map.dragging.disable();
     map.doubleClickZoom.disable();
-    map.scrollWheelZoom.disable();
-    map.touchZoom.disable();
-    map.boxZoom.disable();
+    map.scrollWheelZoom.enable();
+    map.touchZoom.enable();
+    map.boxZoom.enable();
   } else if (!is3DActive) {
     map.dragging.enable();
     map.doubleClickZoom.enable();
@@ -7488,6 +7500,7 @@ function setToolMode(newMode) {
   } else if (drawingInProgress) {
     cancelCurrentDrawing();
   }
+  if (toolMode !== 'draw' && spacePanActive) { spacePanActive = false; map.getContainer().classList.remove('space-pan-active'); }
 }
 btnRuler.addEventListener('click', () => setToolMode(toolMode === 'ruler' ? 'none' : 'ruler'));
 btnDraw.addEventListener('click', () => setToolMode(toolMode === 'draw' ? 'none' : 'draw'));
@@ -9361,6 +9374,36 @@ let localDrawings = [];
 let drawRedoStack = [];
 let drawingInProgress = null;
 const drawLayerGroup = L.layerGroup().addTo(map);
+// Draw reserves left-click-drag for the stroke gesture itself (map.dragging
+// stays off — see setToolMode), so holding Space is the escape hatch for
+// panning without leaving the tool: press-and-hold flips map.dragging on and
+// blocks new strokes from starting for as long as it's held, release puts
+// Draw's own gesture back. Mirrors the same convention as most drawing apps.
+let spacePanActive = false;
+document.addEventListener('keydown', (e) => {
+  if (e.code !== 'Space' || toolMode !== 'draw' || spacePanActive) return;
+  const tag = (document.activeElement && document.activeElement.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  e.preventDefault(); // stop the page from scrolling on Space
+  spacePanActive = true;
+  map.dragging.enable();
+  map.getContainer().classList.add('space-pan-active');
+});
+document.addEventListener('keyup', (e) => {
+  if (e.code !== 'Space' || !spacePanActive) return;
+  spacePanActive = false;
+  map.getContainer().classList.remove('space-pan-active');
+  if (toolMode === 'draw') map.dragging.disable();
+});
+// Releasing Space after the window/tab lost focus mid-hold would otherwise
+// leave dragging stuck enabled with no matching keyup to catch — reset on
+// blur so Draw's own gesture reliably comes back.
+window.addEventListener('blur', () => {
+  if (!spacePanActive) return;
+  spacePanActive = false;
+  map.getContainer().classList.remove('space-pan-active');
+  if (toolMode === 'draw') map.dragging.disable();
+});
 const DRAWINGS_STORAGE_KEY = 'heatmapLocalDrawings_v1';
 // Strips the Leaflet _layer reference renderDrawing attaches (not
 // serializable, and rebuilt on load anyway) before writing plain data.
@@ -9496,10 +9539,12 @@ document.querySelectorAll('.draw-tool-btn').forEach(btn => {
    which is what every other part of the app (export, undo/redo, storage)
    already expects. This mirrors how map-annotation tools like deepstatemap
    handle freehand drawing — screen-space canvas for the live feedback,
-   georeferenced vectors only for the committed result. Locking pan AND zoom
-   for the whole time a tool is active (see setToolMode) is what keeps
-   screen-pixel coordinates meaningful for the entire stroke, not just
-   between two consecutive events. */
+   georeferenced vectors only for the committed result. Keeping dragging AND
+   zoom disabled for the actual duration of a stroke (startDrawing disables
+   zoom, finishDrawing/cancelCurrentDrawing restore it — dragging itself is
+   handled per-tool by setToolMode instead, since Draw needs it off even
+   between strokes) is what keeps screen-pixel coordinates meaningful for the
+   whole stroke, not just between two consecutive events. */
 const drawCanvas = document.createElement('canvas');
 drawCanvas.id = 'drawPreviewCanvas';
 map.getContainer().appendChild(drawCanvas);
@@ -9590,6 +9635,17 @@ function startDrawing(cp) {
   resizeDrawCanvas();
   clearDrawCanvas();
   drawCanvas.style.display = 'block';
+  // Zoom (wheel/pinch/box) is normally left on while Draw is just armed (see
+  // setToolMode) so the user can reposition between strokes, but the live
+  // preview's screenPoints are raw container pixels with no reprojection —
+  // a zoom mid-stroke (wheel scrolled while the button's still held, or a
+  // second finger landing to pinch mid-drag) would silently shift the scale
+  // under an in-flight stroke and corrupt where finishDrawing ultimately
+  // places it. So zoom is only actually off for the few hundred ms a stroke
+  // is in progress, not for the whole time the tool is armed.
+  map.scrollWheelZoom.disable();
+  map.touchZoom.disable();
+  map.boxZoom.disable();
   const color = drawColorInput.value, size = +drawSizeInput.value;
   const pt = [cp.x, cp.y];
   if (drawTool === 'pencil') {
@@ -9616,6 +9672,9 @@ function finishDrawing() {
   drawingInProgress = null;
   clearDrawCanvas();
   drawCanvas.style.display = 'none';
+  map.scrollWheelZoom.enable();
+  map.touchZoom.enable();
+  map.boxZoom.enable();
 
   let record = null;
   if (d.type === 'pencil') {
@@ -9651,6 +9710,9 @@ function cancelCurrentDrawing() {
   drawingInProgress = null;
   clearDrawCanvas();
   drawCanvas.style.display = 'none';
+  map.scrollWheelZoom.enable();
+  map.touchZoom.enable();
+  map.boxZoom.enable();
 }
 
 function drawUndo() {
@@ -9697,7 +9759,7 @@ function handleDrawMove(cp) {
   else scheduleShapePreview(cp);
 }
 
-map.on('mousedown', (e) => { if (toolMode === 'draw') startDrawing(e.containerPoint); });
+map.on('mousedown', (e) => { if (toolMode === 'draw' && !spacePanActive) startDrawing(e.containerPoint); });
 map.on('mousemove', (e) => { if (toolMode === 'draw' && drawingInProgress) handleDrawMove(e.containerPoint); });
 map.on('mouseup', () => { if (toolMode === 'draw') { flushPendingShapePreview(); finishDrawing(); } });
 
@@ -9711,7 +9773,7 @@ function containerPointFromTouch(touch) {
 }
 const mapContainerEl = map.getContainer();
 mapContainerEl.addEventListener('touchstart', (ev) => {
-  if (toolMode !== 'draw' || !ev.touches.length) return;
+  if (toolMode !== 'draw' || !ev.touches.length || spacePanActive) return;
   ev.preventDefault();
   startDrawing(containerPointFromTouch(ev.touches[0]));
 }, { passive: false });
