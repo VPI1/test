@@ -724,7 +724,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v7.7</span>
+      <span class="version-tag">v7.8</span>
     </div>
   </div>
 </div>
@@ -8896,14 +8896,15 @@ const ROUTE_VARIANT_DEDUP_DIST_FRAC = 0.02;
 const ROUTE_VARIANT_DEDUP_COVER_PP = 2;
 // Default selection: prefer the highest-cover variant, UNLESS chasing that
 // last bit of cover makes the route this much longer than the shortest
-// available variant — e.g. a max-cover route that's 3x the walk just to
-// avoid one open field isn't a reasonable default, even though it's
-// technically the "best" one by cover alone. In that case, default to
-// whichever variant has the next-best cover among the ones that ARE a
-// reasonable length instead (see pickDefaultRouteVariant) — the pure
-// max-cover option is still right there in the alternatives list to pick
-// explicitly, just not forced on the user by default.
-const ROUTE_DEFAULT_LENGTH_TOLERANCE = 1.4;
+// available variant — only an extreme case (e.g. a max-cover route that's
+// 5x the walk just to avoid one open field) should fall back to something
+// shorter; a genuinely longer, more-deviating route is exactly what "max
+// cover" is supposed to mean, so it's deliberately given a lot of room
+// before that's overridden. In that fallback case, default to whichever
+// variant has the next-best cover among the ones that ARE a reasonable
+// length instead (see pickDefaultRouteVariant) — the pure max-cover option
+// is still right there in the alternatives list to pick explicitly either way.
+const ROUTE_DEFAULT_LENGTH_TOLERANCE = 5.0;
 // Post-A* geometry cleanup: the 8-directional grid can only move in 45°
 // steps, so a path that's really following a straight treeline/urban edge
 // comes out as a staircase — and because the staircase's vertices wander a
