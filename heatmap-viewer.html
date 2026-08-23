@@ -335,6 +335,15 @@
   #map.drawing-cursor{cursor:crosshair;}
   #map.drawing-cursor .leaflet-interactive{cursor:crosshair!important;}
 
+  /* ---- Drag handle shared by every floating panel below (Ruler/Route/
+     Horizon) — see makePanelDraggable. A small grip bar inside each
+     panel's own padding (not a negative-margin bleed to the edge, so it
+     works the same regardless of each panel's own padding values). ---- */
+  .panel-drag-handle{width:100%;height:10px;margin-bottom:2px;cursor:grab;display:flex;align-items:center;justify-content:center;border-radius:4px;touch-action:none;}
+  .panel-drag-handle:active{cursor:grabbing;}
+  .panel-drag-handle::before{content:'';width:32px;height:3px;border-radius:2px;background:var(--border);}
+  .panel-drag-handle:hover::before{background:var(--sub);}
+
   /* ---- Floating ruler panel ---- */
   #rulerPanel{
     position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:1200;display:none;
@@ -563,7 +572,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v7.0</span>
+      <span class="version-tag">v7.1</span>
     </div>
   </div>
 </div>
@@ -631,12 +640,14 @@
 </div>
 
 <div id="rulerPanel">
+  <div class="panel-drag-handle" title="Drag to move"></div>
   <span class="ruler-stat">Distance: <b id="rulerDistance">0 m</b></span>
   <span class="ruler-stat" id="rulerAreaWrap" style="display:none;">Area: <b id="rulerArea">0 m²</b></span>
   <button id="btnRulerClear" class="small"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg> Clear</button>
 </div>
 
 <div id="horizonPanel">
+  <div class="panel-drag-handle" title="Drag to move"></div>
   <div class="panel-header-row">
     <span class="micro-label" style="margin-bottom:0;">Horizon</span>
     <button id="btnHorizonClear" class="small"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg> Clear</button>
@@ -650,6 +661,7 @@
 </div>
 
 <div id="routePanel">
+  <div class="panel-drag-handle" title="Drag to move"></div>
   <div class="panel-header-row">
     <div class="route-mode-row">
       <button id="btnRouteCar" class="small active-toggle"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="10" width="18" height="6" rx="1.5"/><circle cx="7.5" cy="17" r="1.8"/><circle cx="16.5" cy="17" r="1.8"/></svg> Car</button>
@@ -5305,12 +5317,18 @@ document.getElementById('btnRouteClear').addEventListener('click', routeClear);
    ROUTE_SOLVE_AVOID_POINT_RADIUS_M of one is removed from the graph
    entirely. Distance/ETA/elevation reuse Foot mode's own formulas/pipeline
    unchanged — only the path geometry differs. */
-const ROUTE_SOLVE_GRID_CELL_TARGET_M = 25; // nominal cell size; coarsened for a long leg so total cells stay bounded (see ROUTE_SOLVE_MAX_GRID_CELLS)
+const ROUTE_SOLVE_GRID_CELL_TARGET_M = 20; // nominal cell size; coarsened for a long leg so total cells stay bounded (see ROUTE_SOLVE_MAX_GRID_CELLS)
 const ROUTE_SOLVE_MAX_GRID_CELLS = 45000;
 const ROUTE_SOLVE_CORRIDOR_PAD_FRAC = 0.35; // how far sideways of the straight line the search corridor extends, as a fraction of leg length
 const ROUTE_SOLVE_CORRIDOR_PAD_MIN_M = 250, ROUTE_SOLVE_CORRIDOR_PAD_MAX_M = 2500;
 const ROUTE_SOLVE_OPEN_COST_MULT = 6; // how much more expensive open ground is per meter than cover — the actual "prefer cover" lever
 const ROUTE_SOLVE_AVOID_POINT_RADIUS_M = 40;
+// A shelterbelt treeline is mapped as a thin LINE (see natural=tree_row in
+// fetchRouteCoverData), not an area with real width — this is the assumed
+// effective canopy/concealment spread either side of it, deliberately a
+// bit generous to compensate for the grid not being fine enough to hug a
+// literal zero-width line at the cell sizes long legs coarsen down to.
+const ROUTE_SOLVE_TREE_ROW_BUFFER_M = 15;
 const ROUTE_SOLVE_MAX_ITER = 300000; // safety cap so a pathological leg (e.g. an avoid point sealing off the only way through) fails fast instead of hanging
 let routeAvoidPoints = []; // [L.LatLng], user-placed "must stay away from" points
 let routePlacingAvoidPoints = false;
@@ -5353,28 +5371,43 @@ function readRouteObstacleBudgets() {
 }
 
 // Overpass, bbox-scoped to the route's own corridor (not the whole
-// country) — "cover" = forest/treeline (natural=wood, landuse=forest) or
-// urban (landuse=residential/commercial/industrial, a coarser but much
-// cheaper proxy for "built-up area" than querying every building
-// footprint individually).
-async function fetchRouteCoverPolygons(bounds) {
+// country) — "cover" = forest (natural=wood, landuse=forest, AREA
+// features), urban (landuse=residential/commercial/industrial, a coarser
+// but much cheaper proxy for "built-up area" than querying every building
+// footprint individually), OR a shelterbelt treeline (natural=tree_row,
+// barrier=hedge — a LINE feature, not an area: OSM maps the actual
+// tree-lined field-edge windbreaks that dominate this kind of steppe
+// farmland as a thin line, not a polygon, which the original version of
+// this fetch never asked for at all — the single biggest reason solved
+// routes were cutting across open fields instead of hugging them, ground-
+// truthed against a real route). Returned as { polygons, lines } — lines
+// need their own near-the-line-within-a-buffer test (see
+// pointNearRouteCoverLines) since "inside" doesn't mean anything for a
+// zero-width feature.
+async function fetchRouteCoverData(bounds) {
   const s = bounds.getSouth(), w = bounds.getWest(), n = bounds.getNorth(), e = bounds.getEast();
   const bbox = `${s},${w},${n},${e}`;
-  const query = `[out:json][timeout:25];(way["natural"="wood"](${bbox});way["landuse"="forest"](${bbox});way["landuse"="residential"](${bbox});way["landuse"="commercial"](${bbox});way["landuse"="industrial"](${bbox}););out geom;`;
+  const query = `[out:json][timeout:25];(way["natural"="wood"](${bbox});way["landuse"="forest"](${bbox});way["landuse"="residential"](${bbox});way["landuse"="commercial"](${bbox});way["landuse"="industrial"](${bbox});way["natural"="tree_row"](${bbox});way["barrier"="hedge"](${bbox}););out geom;`;
+  const polygons = [], lines = [];
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 20000);
     const resp = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: 'data=' + encodeURIComponent(query), signal: ctrl.signal });
     clearTimeout(timer);
-    if (!resp.ok) return [];
+    if (!resp.ok) return { polygons, lines };
     const data = await resp.json();
-    return (data.elements || []).filter(el => el.type === 'way' && el.geometry && el.geometry.length >= 3).map(el => {
-      const ring = el.geometry.map(pt => [pt.lat, pt.lon]);
+    (data.elements || []).forEach(el => {
+      if (el.type !== 'way' || !el.geometry || el.geometry.length < 2) return;
+      const tags = el.tags || {};
+      const isLine = tags.natural === 'tree_row' || tags.barrier === 'hedge';
+      const pts = el.geometry.map(pt => [pt.lat, pt.lon]);
       let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
-      ring.forEach(([lat, lng]) => { minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat); minLng = Math.min(minLng, lng); maxLng = Math.max(maxLng, lng); });
-      return { ring, bbox: [minLat, maxLat, minLng, maxLng] };
+      pts.forEach(([lat, lng]) => { minLat = Math.min(minLat, lat); maxLat = Math.max(maxLat, lat); minLng = Math.min(minLng, lng); maxLng = Math.max(maxLng, lng); });
+      if (isLine) lines.push({ points: pts, bbox: [minLat, maxLat, minLng, maxLng] });
+      else if (pts.length >= 3) polygons.push({ ring: pts, bbox: [minLat, maxLat, minLng, maxLng] });
     });
-  } catch (e) { return []; } // Overpass down/slow/rate-limited — solver falls back to treating everything as open ground rather than blocking
+  } catch (e) {} // Overpass down/slow/rate-limited — solver falls back to whatever it already has (often nothing) rather than blocking
+  return { polygons, lines };
 }
 // Standard even-odd ray-casting point-in-polygon test, bbox pre-filtered —
 // same technique as the horizon tool's own (now-removed) obstacle check.
@@ -5390,6 +5423,33 @@ function pointInRouteCover(lat, lng, polygons) {
       if (intersect) inside = !inside;
     }
     if (inside) return true;
+  }
+  return false;
+}
+// Distance in meters from a point to the nearest point on a segment —
+// local equirectangular approximation (fine at this sub-corridor scale),
+// same convention solveCoverLeg's own grid uses.
+function distPointToSegmentM(lat, lng, p1, p2) {
+  const mLat = 111320, mLng = 111320 * Math.cos(lat * Math.PI / 180);
+  const px = lng * mLng, py = lat * mLat;
+  const ax = p1[1] * mLng, ay = p1[0] * mLat;
+  const bx = p2[1] * mLng, by = p2[0] * mLat;
+  const dx = bx - ax, dy = by - ay;
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq > 0 ? ((px - ax) * dx + (py - ay) * dy) / lenSq : 0;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+// A shelterbelt/hedge is a thin LINE, not an area — "under cover" from one
+// means within its effective canopy spread, not literally on the line.
+function pointNearRouteCoverLines(lat, lng, lines, bufferM) {
+  const padDeg = bufferM / 100000; // generous bbox pad in degrees, cheap pre-filter only
+  for (const line of lines) {
+    const [minLat, maxLat, minLng, maxLng] = line.bbox;
+    if (lat < minLat - padDeg || lat > maxLat + padDeg || lng < minLng - padDeg || lng > maxLng + padDeg) continue;
+    for (let i = 1; i < line.points.length; i++) {
+      if (distPointToSegmentM(lat, lng, line.points[i - 1], line.points[i]) <= bufferM) return true;
+    }
   }
   return false;
 }
@@ -5492,7 +5552,7 @@ class RouteMinHeap {
 }
 
 const NEIGHBOR_OFFSETS_8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
-// Solves ONE leg (from -> to). opts: { maxCrossings:{ditches,teeth,wire (number|null)}, avoidPoints, coverPolys, fortSegs:{type:[[p1,p2],...]} }.
+// Solves ONE leg (from -> to). opts: { maxCrossings:{ditches,teeth,wire (number|null)}, avoidPoints, coverPolys, coverLines, fortSegs:{type:[[p1,p2],...]} }.
 // onProgress(pct) is called periodically (also yields a frame so the bar
 // actually paints — a tight synchronous loop of this size would otherwise
 // freeze the tab for the whole search).
@@ -5520,7 +5580,7 @@ async function solveCoverLeg(from, to, opts, onProgress) {
     for (let c = 0; c < cols; c++) {
       const idx = r * cols + c;
       const ll = cellToLatLng(c, r);
-      coverGrid[idx] = pointInRouteCover(ll.lat, ll.lng, opts.coverPolys) ? 1 : 0;
+      coverGrid[idx] = (pointInRouteCover(ll.lat, ll.lng, opts.coverPolys) || pointNearRouteCoverLines(ll.lat, ll.lng, opts.coverLines, ROUTE_SOLVE_TREE_ROW_BUFFER_M)) ? 1 : 0;
       for (const ap of opts.avoidPoints) {
         if (ll.distanceTo(ap) < ROUTE_SOLVE_AVOID_POINT_RADIUS_M) { blockedGrid[idx] = 1; break; }
       }
@@ -5645,8 +5705,8 @@ async function computeSolvedRoute() {
 
   const maxCrossings = readRouteObstacleBudgets();
   const budgetedTypes = ['ditches', 'teeth', 'wire'].filter(k => maxCrossings[k] != null);
-  const [coverPolys, fortSegsRaw] = await Promise.all([
-    fetchRouteCoverPolygons(fetchBounds),
+  const [coverData, fortSegsRaw] = await Promise.all([
+    fetchRouteCoverData(fetchBounds),
     Promise.all(budgetedTypes.map(t => fetchRouteFortSegments(t)))
   ]);
   if (requestId !== routeSolveRequestId) return;
@@ -5654,7 +5714,7 @@ async function computeSolvedRoute() {
   budgetedTypes.forEach((t, i) => { fortSegs[t] = filterSegmentsToBBox(fortSegsRaw[i], fetchBounds); });
 
   routeStatsEl.textContent = 'Solving…';
-  const opts = { maxCrossings, avoidPoints: routeAvoidPoints, coverPolys, fortSegs };
+  const opts = { maxCrossings, avoidPoints: routeAvoidPoints, coverPolys: coverData.polygons, coverLines: coverData.lines, fortSegs };
   let allPoints = [], allUnderCover = [];
   for (let i = 1; i < routePoints.length; i++) {
     const leg = await solveCoverLeg(routePoints[i - 1], routePoints[i], opts, (pct) => {
@@ -5683,6 +5743,46 @@ async function computeSolvedRoute() {
   wireElevationChartHover(routeElevWrapEl, samples, 380, 130);
 }
 document.getElementById('btnRouteSolveGo').addEventListener('click', () => { if (routePoints.length >= 2) computeSolvedRoute(); });
+
+/* ---------------- Floating panel dragging ----------------
+   The Ruler/Route/Horizon panels all float at a fixed top-center position
+   by default (position:fixed + left:50%/transform:translateX(-50%)) — this
+   lets the user grab the small handle at the top of each and drag it
+   anywhere on screen instead, e.g. out of the way of the very route it's
+   showing stats for. First drag switches the panel from centered
+   (left:50%+transform) to an explicit left/top pixel position; after that
+   it behaves like an ordinary manually-positioned fixed element. Not
+   persisted across reloads — panels reopen centered every time, same as
+   before this existed, just movable once open. */
+function makePanelDraggable(panelEl) {
+  const handle = panelEl.querySelector('.panel-drag-handle');
+  if (!handle) return;
+  let dragging = false, startX = 0, startY = 0, startLeft = 0, startTop = 0;
+  handle.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+    const rect = panelEl.getBoundingClientRect();
+    startX = e.clientX; startY = e.clientY; startLeft = rect.left; startTop = rect.top;
+    panelEl.style.left = rect.left + 'px';
+    panelEl.style.top = rect.top + 'px';
+    panelEl.style.transform = 'none';
+    e.preventDefault();
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const rect = panelEl.getBoundingClientRect();
+    let newLeft = startLeft + (e.clientX - startX);
+    let newTop = startTop + (e.clientY - startY);
+    newLeft = Math.min(Math.max(newLeft, -rect.width + 40), window.innerWidth - 40);
+    newTop = Math.min(Math.max(newTop, 0), window.innerHeight - 40);
+    panelEl.style.left = newLeft + 'px';
+    panelEl.style.top = newTop + 'px';
+  });
+  function endDrag(e) { dragging = false; try { handle.releasePointerCapture(e.pointerId); } catch (err) {} }
+  handle.addEventListener('pointerup', endDrag);
+  handle.addEventListener('pointercancel', endDrag);
+}
+['rulerPanel', 'routePanel', 'horizonPanel'].forEach(id => makePanelDraggable(document.getElementById(id)));
 
 /* ---------------- Draw tool (local scratchpad only) ----------------
    Not part of the published heatmap-data.json — purely local to this
