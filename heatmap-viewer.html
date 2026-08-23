@@ -334,6 +334,11 @@
   .draw-actions-row button{flex:1;}
   #map.drawing-cursor{cursor:crosshair;}
   #map.drawing-cursor .leaflet-interactive{cursor:crosshair!important;}
+  /* Space held while Draw is active — see spacePanActive — swaps the
+     crosshair for the standard pan-grab cursor so it's obvious dragging
+     will move the map, not draw, for as long as the key stays down. */
+  #map.space-pan-active,#map.space-pan-active.drawing-cursor{cursor:grab;}
+  #map.space-pan-active.leaflet-dragging{cursor:grabbing;}
 
   /* ---- Drag handle shared by every floating panel below (Ruler/Route/
      Horizon) — see makePanelDraggable. A small grip bar inside each
@@ -572,7 +577,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v7.4</span>
+      <span class="version-tag">v7.5</span>
     </div>
   </div>
 </div>
@@ -3939,6 +3944,10 @@ function setToolMode(newMode) {
   horizonPanel.style.display = toolMode === 'horizon' ? 'flex' : 'none';
   routePanel.style.display = toolMode === 'route' ? 'flex' : 'none';
   map.getContainer().classList.toggle('drawing-cursor', toolMode === 'draw' || toolMode === 'coord' || toolMode === 'horizon' || toolMode === 'route');
+  // Ruler/Draw/Coords/Horizon/Route and the 3D tilt both want
+  // exclusive control of the map — can't measure/sketch/pick on a tilted,
+  // non-interactive preview — so picking one always drops out of 3D first.
+  if (toolMode !== 'none' && is3DActive) toggle3DView(false);
   // Each tool's own on-map artifact only makes sense while that tool is the
   // one you're actively using — leaving it up after switching away just
   // clutters the map with a stale measurement/sketch/popup from whatever you
@@ -3953,24 +3962,27 @@ function setToolMode(newMode) {
   if (oldMode === 'horizon') { horizonClear(); map.removeLayer(horizonHistoryLayerGroup); }
   if (toolMode === 'horizon') horizonHistoryLayerGroup.addTo(map);
   if (oldMode === 'route') routeClear();
-  // Any real tool and the 3D tilt both want exclusive control of dragging/
-  // zoom — can't measure or sketch on a tilted, non-interactive preview — so
-  // picking a tool always drops out of 3D first.
-  if (toolMode !== 'none' && is3DActive) toggle3DView(false);
-  // Ruler, Draw, and Route all need the view to hold still for the whole
-  // interaction (Draw's live preview — see the canvas-based system below —
-  // tracks the pointer in screen-pixel space, which only stays valid if the
-  // view can't shift mid-stroke; Ruler/Route's points are placed relative to
-  // each other on a fixed view). Coord-picking and Horizon are both
-  // single-tap tools with no such dependency, so they deliberately leave
-  // panning and zooming free.
-  const locksView = toolMode === 'ruler' || toolMode === 'draw' || toolMode === 'route';
-  if (locksView) {
+  // Ruler and Route place points from Leaflet's own click latlng (already
+  // real geo-coordinates, reprojected automatically on every pan/zoom just
+  // like any other marker), so panning/zooming between clicks was never
+  // actually unsafe for them — only Draw's live preview genuinely needs the
+  // view to hold still DURING a stroke, since it's plotted directly in
+  // screen-pixel space for performance (see the canvas-based system below)
+  // and has no way to reproject mid-stroke. So: Draw keeps left-click-drag
+  // reserved for drawing (that gesture can't mean two things at once), but
+  // gets every other form of navigation — scroll/pinch zoom, box-zoom, and a
+  // hold-Space-to-pan escape hatch (see spacePanActive below) — while just
+  // ARMED, so the user isn't forced back to the Pan tool to reposition
+  // between strokes. Zoom is then further, briefly disabled by startDrawing
+  // for the actual duration of a stroke (same screen-pixel reasoning) and
+  // restored by finishDrawing/cancelCurrentDrawing once it ends.
+  // Ruler and Route get full normal navigation with no restriction at all.
+  if (toolMode === 'draw') {
     map.dragging.disable();
     map.doubleClickZoom.disable();
-    map.scrollWheelZoom.disable();
-    map.touchZoom.disable();
-    map.boxZoom.disable();
+    map.scrollWheelZoom.enable();
+    map.touchZoom.enable();
+    map.boxZoom.enable();
   } else if (!is3DActive) {
     map.dragging.enable();
     map.doubleClickZoom.enable();
@@ -3981,16 +3993,14 @@ function setToolMode(newMode) {
   } else if (drawingInProgress) {
     cancelCurrentDrawing();
   }
+  if (toolMode !== 'draw' && spacePanActive) { spacePanActive = false; map.getContainer().classList.remove('space-pan-active'); }
 }
 btnRuler.addEventListener('click', () => setToolMode(toolMode === 'ruler' ? 'none' : 'ruler'));
 btnDraw.addEventListener('click', () => setToolMode(toolMode === 'draw' ? 'none' : 'draw'));
+btnCoordPick.addEventListener('click', () => setToolMode(toolMode === 'coord' ? 'none' : 'coord'));
 btnHorizon.addEventListener('click', () => setToolMode(toolMode === 'horizon' ? 'none' : 'horizon'));
 btnRoute.addEventListener('click', () => setToolMode(toolMode === 'route' ? 'none' : 'route'));
-btnCoordPick.addEventListener('click', () => setToolMode(toolMode === 'coord' ? 'none' : 'coord'));
 
-// Ctrl+Z/Ctrl+Shift+Z (and the Ctrl+Y alias) target the draw tool's own
-// undo/redo stack (see drawUndo/drawRedo below) — the viewer has no other
-// undo history to conflict with, unlike the editor's layer-editing one.
 // Ctrl+Z/Ctrl+Shift+Z (and the Ctrl+Y alias) target whichever tool is active's
 // own undo/redo stack — the draw tool's strokes (drawUndo/drawRedo) or the
 // ruler's placed vertices (rulerUndo/rulerRedo). The viewer has no other
@@ -5860,17 +5870,48 @@ function makePanelDraggable(panelEl) {
 ['rulerPanel', 'routePanel', 'horizonPanel'].forEach(id => makePanelDraggable(document.getElementById(id)));
 
 /* ---------------- Draw tool (local scratchpad only) ----------------
-   Not part of the published heatmap-data.json — purely local to this
-   browser, never synced anywhere. They DO now survive a reload (see
-   saveLocalDrawings/loadLocalDrawingsFromStorage below, localStorage-
-   backed) — picking up new russia.geojson/grayzone.geojson control-zone
-   data means reloading the page, and hand-drawn axis-of-advance arrows
-   shouldn't have to be redrawn from scratch every time that happens. */
+   Deliberately NOT part of `layers`/buildExportData/heatmap-data.json — these
+   are personal annotations local to this browser, never published or synced
+   anywhere. They DO now survive a reload (see saveLocalDrawings/
+   loadLocalDrawingsFromStorage below, localStorage-backed) — picking up new
+   russia.geojson/grayzone.geojson control-zone data means reloading the
+   page, and hand-drawn axis-of-advance arrows shouldn't have to be redrawn
+   from scratch every time that happens. */
 let drawTool = 'pencil';
 let localDrawings = [];
 let drawRedoStack = [];
 let drawingInProgress = null;
 const drawLayerGroup = L.layerGroup().addTo(map);
+// Draw reserves left-click-drag for the stroke gesture itself (map.dragging
+// stays off — see setToolMode), so holding Space is the escape hatch for
+// panning without leaving the tool: press-and-hold flips map.dragging on and
+// blocks new strokes from starting for as long as it's held, release puts
+// Draw's own gesture back. Mirrors the same convention as most drawing apps.
+let spacePanActive = false;
+document.addEventListener('keydown', (e) => {
+  if (e.code !== 'Space' || toolMode !== 'draw' || spacePanActive) return;
+  const tag = (document.activeElement && document.activeElement.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  e.preventDefault(); // stop the page from scrolling on Space
+  spacePanActive = true;
+  map.dragging.enable();
+  map.getContainer().classList.add('space-pan-active');
+});
+document.addEventListener('keyup', (e) => {
+  if (e.code !== 'Space' || !spacePanActive) return;
+  spacePanActive = false;
+  map.getContainer().classList.remove('space-pan-active');
+  if (toolMode === 'draw') map.dragging.disable();
+});
+// Releasing Space after the window/tab lost focus mid-hold would otherwise
+// leave dragging stuck enabled with no matching keyup to catch — reset on
+// blur so Draw's own gesture reliably comes back.
+window.addEventListener('blur', () => {
+  if (!spacePanActive) return;
+  spacePanActive = false;
+  map.getContainer().classList.remove('space-pan-active');
+  if (toolMode === 'draw') map.dragging.disable();
+});
 const DRAWINGS_STORAGE_KEY = 'heatmapLocalDrawings_v1';
 // Strips the Leaflet _layer reference renderDrawing attaches (not
 // serializable, and rebuilt on load anyway) before writing plain data.
@@ -5891,6 +5932,12 @@ function loadLocalDrawingsFromStorage() {
 const drawColorInput = document.getElementById('drawColor');
 const drawSizeInput = document.getElementById('drawSize');
 
+// Quick preset swatches alongside the native color picker — clicking one just
+// sets drawColorInput's own value (the single source of truth mousedown reads
+// from), so nothing else needs to know swatches exist. The reverse direction
+// (picking a custom color via the native picker) clears every swatch's active
+// ring unless it happens to exactly match one, via drawColorInput's own
+// 'input' event below.
 document.querySelectorAll('.draw-swatch').forEach(sw => {
   sw.addEventListener('click', () => {
     drawColorInput.value = sw.dataset.color;
@@ -5903,10 +5950,16 @@ drawColorInput.addEventListener('input', () => {
   });
 });
 
-// Applied once, to the finished stroke (see finishDrawing) — the LIVE preview
-// while dragging uses its own much cheaper incremental smoothing on a canvas
-// (see drawPencilSegment) instead of re-running this over the whole growing
-// point list every frame.
+// A fast freehand stroke's raw mousemove samples end up sparse and far apart —
+// L.polyline just connects them with straight segments, reading as a blocky,
+// angular line rather than a smooth pencil stroke. Catmull-Rom spline
+// interpolation threads a smooth curve THROUGH every original point (it doesn't
+// move any of them, just adds more points along a curve between each pair),
+// so the stroke keeps its actual drawn shape but the sharp corners between
+// sparse samples soften into a flowing line. Applied once, to the finished
+// stroke (see finishDrawing) — the LIVE preview while dragging uses its own
+// much cheaper incremental smoothing on a canvas (see drawPencilSegment)
+// instead of re-running this over the whole growing point list every frame.
 function smoothPencilPoints(points, segmentsPerSpan) {
   if (points.length < 3) return points;
   segmentsPerSpan = segmentsPerSpan || 8;
@@ -5931,7 +5984,9 @@ function smoothPencilPoints(points, segmentsPerSpan) {
 
 // The shaft is drawn a little short of the true endpoint (pulled back along
 // the line's own direction) so its round end-cap lands underneath the solid
-// arrowhead triangle instead of poking out past its narrow tip.
+// arrowhead triangle instead of poking out past its narrow tip — without
+// this, the cap's own curve is visibly wider than the sharp point of the
+// triangle sitting on top of it, showing up as a stray dot right at the tip.
 function arrowShaftEndPoint(fromPt, toPt, size) {
   const angle = Math.atan2(toPt.y - fromPt.y, toPt.x - fromPt.x);
   const pullBack = (8 + size * 2) * 0.6;
@@ -5972,19 +6027,32 @@ document.querySelectorAll('.draw-tool-btn').forEach(btn => {
 });
 
 /* ---- Live stroke preview: plain <canvas>, screen-pixel space ----
-   Points are plotted directly in on-screen pixels (no per-point Leaflet
-   reprojection), the finished part of a pencil stroke is painted once and
-   never touched again (an incremental quadratic-curve-through-midpoints
-   technique — see drawPencilSegment — draws only the newest segment each
-   call, so cost per event is constant instead of growing with stroke
-   length), and line/arrow/circle/rectangle previews are cheap enough to
-   redraw from scratch every frame since they're just one primitive, not an
-   accumulating path. Only the FINISHED shape gets handed to a real Leaflet
-   layer (see finishDrawing). This mirrors how map-annotation tools like
-   deepstatemap handle freehand drawing — screen-space canvas for the live
-   feedback, georeferenced vectors only for the committed result. Locking pan
-   AND zoom for the whole time a tool is active (see setToolMode) is what
-   keeps screen-pixel coordinates meaningful for the entire stroke. */
+   The previous approach re-projected every point through Leaflet (lat/lng ->
+   layer point) and rebuilt an SVG path's `d` attribute on every update — cheap
+   for a couple of points, but for a long pencil stroke that cost grows with
+   the stroke itself, and re-running the Catmull-Rom smoothing over the WHOLE
+   point list every frame on top of that is what produced both the visible
+   lag/stepping on longer strokes and the "already-drawn part wobbles" effect
+   (smoothing is a global operation — appending one point can nudge the curve
+   several segments back, so anything already on screen keeps subtly reshaping
+   itself). A 2D canvas overlaying the map sidesteps all of it: points are
+   plotted directly in on-screen pixels (no per-point reprojection), the
+   finished part of a pencil stroke is painted once and never touched again
+   (an incremental quadratic-curve-through-midpoints technique — see
+   drawPencilSegment — draws only the newest segment each call, so cost per
+   event is constant instead of growing with stroke length), and line/arrow/
+   circle/rectangle previews are cheap enough to redraw from scratch every
+   frame since they're just one primitive, not an accumulating path. Only the
+   FINISHED shape gets handed to a real Leaflet layer (see finishDrawing),
+   which is what every other part of the app (export, undo/redo, storage)
+   already expects. This mirrors how map-annotation tools like deepstatemap
+   handle freehand drawing — screen-space canvas for the live feedback,
+   georeferenced vectors only for the committed result. Keeping dragging AND
+   zoom disabled for the actual duration of a stroke (startDrawing disables
+   zoom, finishDrawing/cancelCurrentDrawing restore it — dragging itself is
+   handled per-tool by setToolMode instead, since Draw needs it off even
+   between strokes) is what keeps screen-pixel coordinates meaningful for the
+   whole stroke, not just between two consecutive events. */
 const drawCanvas = document.createElement('canvas');
 drawCanvas.id = 'drawPreviewCanvas';
 map.getContainer().appendChild(drawCanvas);
@@ -6034,8 +6102,9 @@ function drawPencilSegment(d, pt) {
 }
 
 // Unlike pencil (appends cheaply, O(1) per new point), a shape's whole
-// geometry changes every tick, so the only option is clearing and redrawing
-// it from scratch. Still trivial: it's one primitive, not an accumulating path.
+// geometry changes every tick — its far corner/edge/radius moves — so the
+// only option is clearing and redrawing it from scratch. Still trivial: it's
+// one primitive, not an accumulating path.
 function redrawLiveShape(d) {
   clearDrawCanvas();
   drawCtx.strokeStyle = d.color;
@@ -6068,11 +6137,23 @@ function redrawLiveShape(d) {
 // Leaflet's own map events only normalize touch into synthetic mouse events
 // for simple taps, not drags, so a real touch listener (below) is needed for
 // drawing to work by dragging a finger on mobile. All three work in
-// screen-pixel coordinates (Leaflet's containerPoint) rather than lat/lng.
+// screen-pixel coordinates (Leaflet's containerPoint) rather than lat/lng —
+// see the comment above drawCanvas for why.
 function startDrawing(cp) {
   resizeDrawCanvas();
   clearDrawCanvas();
   drawCanvas.style.display = 'block';
+  // Zoom (wheel/pinch/box) is normally left on while Draw is just armed (see
+  // setToolMode) so the user can reposition between strokes, but the live
+  // preview's screenPoints are raw container pixels with no reprojection —
+  // a zoom mid-stroke (wheel scrolled while the button's still held, or a
+  // second finger landing to pinch mid-drag) would silently shift the scale
+  // under an in-flight stroke and corrupt where finishDrawing ultimately
+  // places it. So zoom is only actually off for the few hundred ms a stroke
+  // is in progress, not for the whole time the tool is armed.
+  map.scrollWheelZoom.disable();
+  map.touchZoom.disable();
+  map.boxZoom.disable();
   const color = drawColorInput.value, size = +drawSizeInput.value;
   const pt = [cp.x, cp.y];
   if (drawTool === 'pencil') {
@@ -6099,6 +6180,9 @@ function finishDrawing() {
   drawingInProgress = null;
   clearDrawCanvas();
   drawCanvas.style.display = 'none';
+  map.scrollWheelZoom.enable();
+  map.touchZoom.enable();
+  map.boxZoom.enable();
 
   let record = null;
   if (d.type === 'pencil') {
@@ -6134,6 +6218,9 @@ function cancelCurrentDrawing() {
   drawingInProgress = null;
   clearDrawCanvas();
   drawCanvas.style.display = 'none';
+  map.scrollWheelZoom.enable();
+  map.touchZoom.enable();
+  map.boxZoom.enable();
 }
 
 function drawUndo() {
@@ -6155,8 +6242,10 @@ function drawRedo() {
 // drawPencilSegment), cheap enough that waiting for an animation frame would
 // only add latency for no benefit. Shape previews (line/arrow/circle/
 // rectangle) redraw the ENTIRE canvas from scratch every call (see
-// redrawLiveShape), so those still get coalesced to one update per frame to
-// avoid clearing/repainting more times than a frame can actually show.
+// redrawLiveShape), so those still get coalesced to one update per frame —
+// the same fix already applied to the heat-brush's own mousemove handler
+// elsewhere in this file — to avoid clearing/repainting more times than a
+// frame can actually show.
 let pendingShapeCp = null;
 let shapeRafPending = false;
 function scheduleShapePreview(cp) {
@@ -6178,7 +6267,7 @@ function handleDrawMove(cp) {
   else scheduleShapePreview(cp);
 }
 
-map.on('mousedown', (e) => { if (toolMode === 'draw') startDrawing(e.containerPoint); });
+map.on('mousedown', (e) => { if (toolMode === 'draw' && !spacePanActive) startDrawing(e.containerPoint); });
 map.on('mousemove', (e) => { if (toolMode === 'draw' && drawingInProgress) handleDrawMove(e.containerPoint); });
 map.on('mouseup', () => { if (toolMode === 'draw') { flushPendingShapePreview(); finishDrawing(); } });
 
@@ -6192,7 +6281,7 @@ function containerPointFromTouch(touch) {
 }
 const mapContainerEl = map.getContainer();
 mapContainerEl.addEventListener('touchstart', (ev) => {
-  if (toolMode !== 'draw' || !ev.touches.length) return;
+  if (toolMode !== 'draw' || !ev.touches.length || spacePanActive) return;
   ev.preventDefault();
   startDrawing(containerPointFromTouch(ev.touches[0]));
 }, { passive: false });
