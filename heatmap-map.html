@@ -706,7 +706,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v7.3</span>
+      <span class="version-tag">v7.4</span>
     </div>
   </div>
 </div>
@@ -8887,14 +8887,20 @@ function readRouteObstacleBudgets() {
 // answers; only reports failure if ALL of them fail. `ok` flag (and which
 // mirror actually served the data, for diagnostics) is surfaced to the
 // caller rather than swallowed.
-// Order matters: overpass-api.de is the canonical full-planet instance
-// (confirmed has real Ukraine tree_row/forest data), kumi.systems is a
-// well-known independent full mirror. osm.ch responds fast but, tested
-// live against a bbox with 124 known polygons + 112 known lines, came
-// back with a valid 200 and ZERO elements — its regional coverage looks
-// incomplete, so it's kept only as a last resort, and even then a mirror
-// that comes back empty never overrides one that actually found data.
+// Order matters, and was tuned against a real, extended outage of the two
+// "obvious" default mirrors (2026-08-23): overpass-api.de (the canonical
+// instance) hung to its own timeout on every attempt, and kumi.systems
+// returned 502 Bad Gateway — both confirmed dead across many tests, not a
+// one-off blip. overpass.openstreetmap.fr answered the identical query in
+// under 1s with full, real data (124/112 known-good polygons/lines) and is
+// now first so a live outage of the other two doesn't cost 50s of waiting
+// before every solve. api.de/kumi stay in the list in case they recover.
+// osm.ch is last: it responds fast but, tested against that same bbox,
+// came back a valid 200 with ZERO elements — its regional coverage looks
+// incomplete, so a mirror that comes back empty never overrides one that
+// actually found data (see the emptyFallback logic below).
 const ROUTE_OVERPASS_MIRRORS = [
+  'https://overpass.openstreetmap.fr/api/interpreter',
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
   'https://overpass.osm.ch/api/interpreter'
