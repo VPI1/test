@@ -355,11 +355,17 @@
   }
   .panel-close-btn:hover{background:var(--accent2);color:#fff;border-color:var(--accent2);}
 
-  /* ---- Floating ruler panel ---- */
+  /* ---- Floating ruler panel ----
+     flex-direction:column (like the Route/Horizon panels below) so the drag
+     handle is its own full-width strip at the top and the close button's
+     fixed top-right corner never collides with actual content — without
+     it, the panel defaulted to row direction, which packed the handle,
+     close button, and Clear button all into one line fighting for the same
+     space. The stat/Clear row now lives in its own nested .panel-header-row. */
   #rulerPanel{
     position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:1200;display:none;
     background:var(--panel);border:1px solid var(--border);border-radius:10px;box-shadow:0 4px 14px #0007;
-    padding:9px 12px;font-size:12.5px;gap:8px;align-items:center;
+    padding:9px 12px;font-size:12.5px;flex-direction:column;gap:6px;
   }
   #rulerPanel .ruler-stat{color:var(--text);}
   #rulerPanel .ruler-stat b{color:var(--good);}
@@ -591,7 +597,7 @@
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8h1a4 4 0 0 1 0 8h-1"/><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"/><line x1="6" y1="1" x2="6" y2="4"/><line x1="10" y1="1" x2="10" y2="4"/><line x1="14" y1="1" x2="14" y2="4"/></svg>
         coff.ee/playfra
       </a>
-      <span class="version-tag">v7.10</span>
+      <span class="version-tag">v7.11</span>
     </div>
   </div>
 </div>
@@ -626,6 +632,8 @@
 </div>
 
 <div id="drawToolbar">
+  <div class="panel-drag-handle" title="Drag to move"></div>
+  <button class="panel-close-btn" title="Close">×</button>
   <div class="draw-tool-row">
     <button class="draw-tool-btn active-toggle" data-draw-tool="pencil" title="Freehand"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg></button>
     <button class="draw-tool-btn" data-draw-tool="line" title="Line"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="19" x2="19" y2="5"/></svg></button>
@@ -661,9 +669,11 @@
 <div id="rulerPanel">
   <div class="panel-drag-handle" title="Drag to move"></div>
   <button class="panel-close-btn" title="Close">×</button>
-  <span class="ruler-stat">Distance: <b id="rulerDistance">0 m</b></span>
-  <span class="ruler-stat" id="rulerAreaWrap" style="display:none;">Area: <b id="rulerArea">0 m²</b></span>
-  <button id="btnRulerClear" class="small"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg> Clear</button>
+  <div class="panel-header-row">
+    <span class="ruler-stat">Distance: <b id="rulerDistance">0 m</b></span>
+    <span class="ruler-stat" id="rulerAreaWrap" style="display:none;">Area: <b id="rulerArea">0 m²</b></span>
+    <button id="btnRulerClear" class="small"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg> Clear</button>
+  </div>
 </div>
 
 <div id="horizonPanel">
@@ -3723,6 +3733,14 @@ function applyHeatmapMasterVisibility() {
   if (heatmapLegendControl._container) {
     heatmapLegendControl._container.style.display = (heatmapMasterVisible && currentViewMode === 'heatmap') ? 'block' : 'none';
   }
+  // "Map" is meant as a single master toggle for whichever primary data
+  // visualization is actually on screen — heat points in Heatmap mode, or
+  // the two control-zone polygons (see CONTROL_ZONES below) in Polygons
+  // mode — rather than only ever affecting heat points. See
+  // heatmap-map.html's own copy for the full rationale (kept in sync).
+  const zonesShouldShow = heatmapMasterVisible && currentViewMode === 'polygons';
+  setControlZoneVisible('russia', zonesShouldShow);
+  setControlZoneVisible('grayzone', zonesShouldShow);
 }
 document.getElementById('chkHeatmapMaster').addEventListener('change', (e) => {
   heatmapMasterVisible = e.target.checked;
@@ -3789,9 +3807,7 @@ function applyViewMode(mode, skipSave) {
   currentViewMode = mode;
   btnViewHeatmap.classList.toggle('active-toggle', mode === 'heatmap');
   btnViewPolygons.classList.toggle('active-toggle', mode === 'polygons');
-  applyHeatmapMasterVisibility();
-  setControlZoneVisible('russia', mode === 'polygons');
-  setControlZoneVisible('grayzone', mode === 'polygons');
+  applyHeatmapMasterVisibility(); // also drives control-zone visibility now — see its own comment
   if (!skipSave) setPref('viewMode', mode);
 }
 btnViewHeatmap.addEventListener('click', () => applyViewMode('heatmap'));
@@ -6247,7 +6263,7 @@ function makePanelDraggable(panelEl) {
   handle.addEventListener('pointerup', endDrag);
   handle.addEventListener('pointercancel', endDrag);
 }
-['rulerPanel', 'routePanel', 'horizonPanel'].forEach(id => makePanelDraggable(document.getElementById(id)));
+['rulerPanel', 'routePanel', 'horizonPanel', 'drawToolbar'].forEach(id => makePanelDraggable(document.getElementById(id)));
 
 /* ---------------- Draw tool (local scratchpad only) ----------------
    Deliberately NOT part of `layers`/buildExportData/heatmap-data.json — these
@@ -6733,25 +6749,42 @@ function parseLatLngInput(q) {
   return { lat, lng };
 }
 
-// Degrees/minutes/seconds, e.g. 47°39'05.8"N 35°52'51.8"E — accepts either
-// order (lat/N-S and lng/E-W are told apart by hemisphere letter, not
-// position), curly or straight prime/double-prime marks for '/", and a
-// missing seconds-mark (some sources omit the trailing "). Exactly two
-// hemisphere-tagged tokens are required so a single MGRS-ish or GPS-ish
-// string doesn't get misread as one axis with the other missing.
-const DMS_TOKEN_RE = /(\d{1,3})[°:\s]+(\d{1,2})['’′:\s]+([\d.]+)\s*(?:["”″])?\s*([NSEWnsew])/g;
-function parseDMSInput(q) {
-  const matches = [...q.matchAll(DMS_TOKEN_RE)];
-  if (matches.length !== 2) return null;
-  let lat = null, lng = null;
-  for (const m of matches) {
-    const deg = parseFloat(m[1]), min = parseFloat(m[2]), sec = parseFloat(m[3]);
+// Covers degrees-minutes-seconds (47°39'05.8"N), degrees-decimal-minutes
+// (47°39.097'N — the format most GPS units and phone map apps actually
+// export by default), and plain decimal-degrees-with-hemisphere (47.6516N,
+// 47.6516°N) — three different levels of precision that all show up in the
+// wild, in one pass rather than three separate near-duplicate parsers: the
+// minutes and seconds groups are simply optional, and whichever ones are
+// present determine which precision level a given token turns out to be.
+// Either axis order (lat/N-S vs lng/E-W told apart by the hemisphere
+// letter, not position) is accepted, but the hemisphere letter itself must
+// TRAIL its number (matching how these are conventionally written, and how
+// the plain-decimal parser above already expects signed values) — a
+// leading letter was tried and dropped: with two hemisphere-prefixed
+// numbers separated by only a space ("N47.6 E36.5"), a global regex has no
+// reliable way to tell which letter belongs to which number without
+// grabbing the wrong one. Curly or straight prime/double-prime marks for
+// '/" are both accepted, and a missing seconds-mark is fine (some sources
+// omit the trailing "). Exactly two hemisphere-tagged tokens are required
+// so a single MGRS-ish string, a plain address, or a settlement name that
+// happens to contain a lone letter-digit pair doesn't get misread as one
+// axis with the other missing.
+const COORD_TOKEN_RE = /(\d{1,3}(?:\.\d+)?)\s*[°:]?\s*(?:(\d{1,2}(?:\.\d+)?)\s*['’′:]?\s*(?:(\d{1,2}(?:\.\d+)?)\s*(?:["”″])?\s*)?)?([NSEWnsew])/g;
+function parseCoordTokensInput(q) {
+  const matches = [...q.matchAll(COORD_TOKEN_RE)];
+  const tokens = matches.map(m => {
+    const deg = parseFloat(m[1]);
+    const min = m[2] !== undefined ? parseFloat(m[2]) : 0;
+    const sec = m[3] !== undefined ? parseFloat(m[3]) : 0;
     const hemi = m[4].toUpperCase();
     let val = deg + min / 60 + sec / 3600;
     if (hemi === 'S' || hemi === 'W') val = -val;
-    if (hemi === 'N' || hemi === 'S') lat = val; else lng = val;
-  }
-  if (lat === null || lng === null) return null;
+    return { axis: (hemi === 'N' || hemi === 'S') ? 'lat' : 'lng', val };
+  });
+  if (tokens.length !== 2) return null;
+  const latTok = tokens.find(t => t.axis === 'lat'), lngTok = tokens.find(t => t.axis === 'lng');
+  if (!latTok || !lngTok) return null;
+  const lat = latTok.val, lng = lngTok.val;
   if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
   return { lat, lng };
 }
@@ -6814,7 +6847,7 @@ function runSearch(query, autoGo) {
     else renderSearchResults([item]);
     return;
   }
-  const coordHit = parseLatLngInput(q) || parseDMSInput(q);
+  const coordHit = parseLatLngInput(q) || parseCoordTokensInput(q);
   if (coordHit) {
     const item = { main: `${coordHit.lat.toFixed(5)}, ${coordHit.lng.toFixed(5)}`, sub: 'Coordinates', lat: coordHit.lat, lng: coordHit.lng, zoom: 15 };
     if (autoGo) goToResult(item.lat, item.lng, item.main, item.zoom);
